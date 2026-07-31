@@ -5,9 +5,9 @@ spring:
   application:
     name: node-control-plane
   datasource:
-    url: jdbc:h2:file:./data/control-plane;AUTO_SERVER=TRUE
-    username: sa
-    password:
+    url: jdbc:mysql://rm-bp1gq2po14z29s0kxuo.mysql.rds.aliyuncs.com:3306/control-plane?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: Ycp20020414@
   jpa:
     hibernate:
       ddl-auto: update
