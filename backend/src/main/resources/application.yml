@@ -1,13 +1,14 @@
 server:
   port: ${CONTROL_PLANE_PORT:8090}
+  forward-headers-strategy: framework
 
 spring:
   application:
     name: node-control-plane
   datasource:
-    url: jdbc:mysql://rm-bp1gq2po14z29s0kxuo.mysql.rds.aliyuncs.com:3306/control-plane?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
-    username: root
-    password: Ycp20020414@
+    url: ${CONTROL_PLANE_DB_URL:jdbc:mysql://rm-bp1gq2po14z29s0kxuo.mysql.rds.aliyuncs.com:3306/control-plane?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
+    username: ${CONTROL_PLANE_DB_USERNAME:root}
+    password: ${CONTROL_PLANE_DB_PASSWORD:}
   jpa:
     hibernate:
       ddl-auto: update
@@ -24,11 +25,21 @@ management:
 control-plane:
   heartbeat:
     interval-ms: ${HEARTBEAT_INTERVAL_MS:15000}
+    failure-threshold: ${HEARTBEAT_FAILURE_THRESHOLD:3}
+    offline-after-ms: ${HEARTBEAT_OFFLINE_AFTER_MS:90000}
   bootstrap:
-    enabled: ${NODE_MANAGER_BOOTSTRAP_ENABLED:true}
-    name: ${NODE_MANAGER_NAME:Vultr Node}
-    base-url: ${NODE_MANAGER_BASE_URL:http://198.13.46.231:8088}
+    enabled: ${NODE_MANAGER_BOOTSTRAP_ENABLED:false}
+    name: ${NODE_MANAGER_NAME:Default Node}
+    base-url: ${NODE_MANAGER_BASE_URL:}
     token: ${NODE_MANAGER_TOKEN:}
   security:
     admin-token: ${CONTROL_PLANE_ADMIN_TOKEN:}
+    registration-token: ${CONTROL_PLANE_REGISTRATION_TOKEN:}
+    encryption-key: ${CONTROL_PLANE_ENCRYPTION_KEY:}
+    login-username: ${CONTROL_PLANE_LOGIN_USERNAME:}
+    login-password: ${CONTROL_PLANE_LOGIN_PASSWORD:}
+    session-ttl-seconds: ${CONTROL_PLANE_SESSION_TTL_SECONDS:43200}
+  provisioning:
+    default-max-users: ${NODE_DEFAULT_MAX_USERS:500}
+    operation-stale-after-ms: ${PROVISIONING_OPERATION_STALE_AFTER_MS:120000}
 

@@ -11,6 +11,7 @@ import com.example.nodecontrol.dto.RemoteModels.ReloadResponse;
 import com.example.nodecontrol.dto.RemoteModels.TrafficResponse;
 import com.example.nodecontrol.dto.RemoteModels.UserConnection;
 import com.example.nodecontrol.dto.RemoteModels.UserPage;
+import com.example.nodecontrol.security.SecretCipher;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.http.HttpHeaders;
@@ -22,17 +23,19 @@ import org.springframework.web.client.RestClient;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.util.UUID;
-
 @Component
 public class NodeManagerClient {
 
     private final RestClient.Builder restClientBuilder;
     private final ObjectMapper objectMapper;
+    private final SecretCipher secretCipher;
 
-    public NodeManagerClient(RestClient.Builder restClientBuilder, ObjectMapper objectMapper) {
+    public NodeManagerClient(RestClient.Builder restClientBuilder,
+                             ObjectMapper objectMapper,
+                             SecretCipher secretCipher) {
         this.restClientBuilder = restClientBuilder;
         this.objectMapper = objectMapper;
+        this.secretCipher = secretCipher;
     }
 
     public AgentInfo getAgentInfo(String baseUrl, String token) {
@@ -64,10 +67,10 @@ public class NodeManagerClient {
                 .body(UserPage.class));
     }
 
-    public CreateUserResponse createUser(ManagedNode node, CreateUserRequest request) {
+    public CreateUserResponse createUser(ManagedNode node, CreateUserRequest request, String idempotencyKey) {
         return execute(() -> client(node).post()
                 .uri("/api/user/create")
-                .header("Idempotency-Key", UUID.randomUUID().toString())
+                .header("Idempotency-Key", idempotencyKey)
                 .body(request)
                 .retrieve()
                 .onStatus(HttpStatusCode::isError, this::handleError)
@@ -90,20 +93,20 @@ public class NodeManagerClient {
                 .body(TrafficResponse.class));
     }
 
-    public OperationResponse bindProxy(ManagedNode node, BindProxyRequest request) {
+    public OperationResponse bindProxy(ManagedNode node, BindProxyRequest request, String idempotencyKey) {
         return execute(() -> client(node).post()
                 .uri("/api/user/bind-proxy")
-                .header("Idempotency-Key", UUID.randomUUID().toString())
+                .header("Idempotency-Key", idempotencyKey)
                 .body(request)
                 .retrieve()
                 .onStatus(HttpStatusCode::isError, this::handleError)
                 .body(OperationResponse.class));
     }
 
-    public OperationResponse deleteUser(ManagedNode node, String userId) {
+    public OperationResponse deleteUser(ManagedNode node, String userId, String idempotencyKey) {
         return execute(() -> client(node).delete()
                 .uri("/api/user/delete/{userId}", userId)
-                .header("Idempotency-Key", UUID.randomUUID().toString())
+                .header("Idempotency-Key", idempotencyKey)
                 .retrieve()
                 .onStatus(HttpStatusCode::isError, this::handleError)
                 .body(OperationResponse.class));
@@ -118,7 +121,7 @@ public class NodeManagerClient {
     }
 
     private RestClient client(ManagedNode node) {
-        return client(node.getBaseUrl(), node.getApiToken());
+        return client(node.getBaseUrl(), secretCipher.decrypt(node.getStoredApiToken()));
     }
 
     private RestClient client(String baseUrl, String token) {

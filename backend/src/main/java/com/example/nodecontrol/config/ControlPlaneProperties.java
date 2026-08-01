@@ -8,6 +8,7 @@ public class ControlPlaneProperties {
     private final Heartbeat heartbeat = new Heartbeat();
     private final Bootstrap bootstrap = new Bootstrap();
     private final Security security = new Security();
+    private final Provisioning provisioning = new Provisioning();
 
     public Heartbeat getHeartbeat() {
         return heartbeat;
@@ -21,8 +22,14 @@ public class ControlPlaneProperties {
         return security;
     }
 
+    public Provisioning getProvisioning() {
+        return provisioning;
+    }
+
     public static class Heartbeat {
         private long intervalMs = 15000;
+        private int failureThreshold = 3;
+        private long offlineAfterMs = 90000;
 
         public long getIntervalMs() {
             return intervalMs;
@@ -30,6 +37,22 @@ public class ControlPlaneProperties {
 
         public void setIntervalMs(long intervalMs) {
             this.intervalMs = intervalMs;
+        }
+
+        public int getFailureThreshold() {
+            return failureThreshold;
+        }
+
+        public void setFailureThreshold(int failureThreshold) {
+            this.failureThreshold = failureThreshold;
+        }
+
+        public long getOfflineAfterMs() {
+            return offlineAfterMs;
+        }
+
+        public void setOfflineAfterMs(long offlineAfterMs) {
+            this.offlineAfterMs = offlineAfterMs;
         }
     }
 
@@ -74,6 +97,11 @@ public class ControlPlaneProperties {
 
     public static class Security {
         private String adminToken = "";
+        private String registrationToken = "";
+        private String encryptionKey = "";
+        private String loginUsername = "";
+        private String loginPassword = "";
+        private long sessionTtlSeconds = 43200;
 
         public String getAdminToken() {
             return adminToken;
@@ -82,6 +110,68 @@ public class ControlPlaneProperties {
         public void setAdminToken(String adminToken) {
             this.adminToken = adminToken;
         }
+
+        public String getRegistrationToken() {
+            return registrationToken;
+        }
+
+        public void setRegistrationToken(String registrationToken) {
+            this.registrationToken = registrationToken;
+        }
+
+        public String getEncryptionKey() {
+            return encryptionKey;
+        }
+
+        public void setEncryptionKey(String encryptionKey) {
+            this.encryptionKey = encryptionKey;
+        }
+
+        public String getLoginUsername() {
+            return loginUsername;
+        }
+
+        public void setLoginUsername(String loginUsername) {
+            this.loginUsername = loginUsername;
+        }
+
+        public String getLoginPassword() {
+            return loginPassword;
+        }
+
+        public void setLoginPassword(String loginPassword) {
+            this.loginPassword = loginPassword;
+        }
+
+        public long getSessionTtlSeconds() {
+            return sessionTtlSeconds;
+        }
+
+        public void setSessionTtlSeconds(long sessionTtlSeconds) {
+            this.sessionTtlSeconds = sessionTtlSeconds;
+        }
     }
+
+    public static class Provisioning {
+        private int defaultMaxUsers = 500;
+        private long operationStaleAfterMs = 120000;
+
+        public int getDefaultMaxUsers() {
+            return defaultMaxUsers;
+        }
+
+        public void setDefaultMaxUsers(int defaultMaxUsers) {
+            this.defaultMaxUsers = defaultMaxUsers;
+        }
+
+        public long getOperationStaleAfterMs() {
+            return operationStaleAfterMs;
+        }
+
+        public void setOperationStaleAfterMs(long operationStaleAfterMs) {
+            this.operationStaleAfterMs = operationStaleAfterMs;
+        }
+    }
+
 }
 

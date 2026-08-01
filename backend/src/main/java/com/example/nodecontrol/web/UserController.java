@@ -9,6 +9,8 @@ import com.example.nodecontrol.dto.RemoteModels.UserConnection;
 import com.example.nodecontrol.dto.RemoteModels.UserPage;
 import com.example.nodecontrol.service.NodeUserService;
 import jakarta.validation.Valid;
+import org.springframework.http.CacheControl;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -17,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestHeader;
 
 import java.util.UUID;
 
@@ -41,16 +44,17 @@ public class UserController {
     }
 
     @PostMapping("/users")
-    public CreateUserResponse createUser(
+    public ResponseEntity<CreateUserResponse> createUser(
             @PathVariable UUID nodeId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             @Valid @RequestBody CreateUserRequest request
     ) {
-        return userService.createUser(nodeId, request);
+        return noStore(userService.createUser(nodeId, request, idempotencyKey));
     }
 
     @GetMapping("/users/{userId}/connections")
-    public UserConnection connections(@PathVariable UUID nodeId, @PathVariable String userId) {
-        return userService.getConnections(nodeId, userId);
+    public ResponseEntity<UserConnection> connections(@PathVariable UUID nodeId, @PathVariable String userId) {
+        return noStore(userService.getConnections(nodeId, userId));
     }
 
     @GetMapping("/users/{userId}/traffic")
@@ -61,14 +65,25 @@ public class UserController {
     @PostMapping("/users/bind-proxy")
     public OperationResponse bindProxy(
             @PathVariable UUID nodeId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             @Valid @RequestBody BindProxyRequest request
     ) {
-        return userService.bindProxy(nodeId, request);
+        return userService.bindProxy(nodeId, request, idempotencyKey);
     }
 
     @DeleteMapping("/users/{userId}")
-    public OperationResponse deleteUser(@PathVariable UUID nodeId, @PathVariable String userId) {
-        return userService.deleteUser(nodeId, userId);
+    public OperationResponse deleteUser(
+            @PathVariable UUID nodeId,
+            @PathVariable String userId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey
+    ) {
+        return userService.deleteUser(nodeId, userId, idempotencyKey);
+    }
+
+    private <T> ResponseEntity<T> noStore(T body) {
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(body);
     }
 }
 

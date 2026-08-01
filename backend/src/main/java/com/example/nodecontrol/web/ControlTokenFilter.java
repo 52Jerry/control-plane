@@ -1,6 +1,7 @@
 package com.example.nodecontrol.web;
 
 import com.example.nodecontrol.config.ControlPlaneProperties;
+import com.example.nodecontrol.security.ControlSessionService;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -18,9 +19,11 @@ import java.security.MessageDigest;
 public class ControlTokenFilter extends OncePerRequestFilter {
 
     private final ControlPlaneProperties properties;
+    private final ControlSessionService sessionService;
 
-    public ControlTokenFilter(ControlPlaneProperties properties) {
+    public ControlTokenFilter(ControlPlaneProperties properties, ControlSessionService sessionService) {
         this.properties = properties;
+        this.sessionService = sessionService;
     }
 
     @Override
@@ -28,7 +31,10 @@ public class ControlTokenFilter extends OncePerRequestFilter {
         String path = request.getRequestURI();
         return !path.startsWith("/api/control")
                 || "/api/control/meta".equals(path)
-                || !StringUtils.hasText(properties.getSecurity().getAdminToken());
+                || "/api/control/agent/register".equals(path)
+                || path.startsWith("/api/control/auth/")
+                || (!StringUtils.hasText(properties.getSecurity().getAdminToken())
+                    && !sessionService.isPasswordLoginEnabled());
     }
 
     @Override
@@ -37,13 +43,14 @@ public class ControlTokenFilter extends OncePerRequestFilter {
                                     FilterChain filterChain) throws ServletException, IOException {
         String expected = properties.getSecurity().getAdminToken();
         String supplied = request.getHeader("X-Control-Token");
-        if (supplied == null || !MessageDigest.isEqual(
-                expected.getBytes(StandardCharsets.UTF_8),
-                supplied.getBytes(StandardCharsets.UTF_8))) {
+        boolean validToken = StringUtils.hasText(expected) && supplied != null && MessageDigest.isEqual(
+                expected.getBytes(StandardCharsets.UTF_8), supplied.getBytes(StandardCharsets.UTF_8));
+        if (!validToken && !sessionService.hasValidSession(request)) {
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
             response.setCharacterEncoding(StandardCharsets.UTF_8.name());
-            response.getWriter().write("{\"message\":\"控制面令牌无效\"}");
+            response.setHeader("Cache-Control", "no-store");
+            response.getWriter().write("{\"message\":\"登录状态已失效，请重新登录\"}");
             return;
         }
         filterChain.doFilter(request, response);

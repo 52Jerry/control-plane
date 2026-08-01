@@ -4,11 +4,16 @@ import com.example.nodecontrol.client.NodeManagerClient;
 import com.example.nodecontrol.config.ControlPlaneProperties;
 import com.example.nodecontrol.domain.ManagedNode;
 import com.example.nodecontrol.domain.ManagedNodeRepository;
+import com.example.nodecontrol.domain.ResidentialAllocationRepository;
+import com.example.nodecontrol.dto.ControlPlaneModels.AgentRegistrationRequest;
+import com.example.nodecontrol.dto.ControlPlaneModels.AgentRegistrationResponse;
 import com.example.nodecontrol.dto.ControlPlaneModels.DashboardView;
 import com.example.nodecontrol.dto.ControlPlaneModels.NodeView;
 import com.example.nodecontrol.dto.ControlPlaneModels.RegisterNodeRequest;
+import com.example.nodecontrol.dto.ControlPlaneModels.UpdateNodeRequest;
 import com.example.nodecontrol.dto.RemoteModels.AgentHeartbeat;
 import com.example.nodecontrol.dto.RemoteModels.AgentInfo;
+import com.example.nodecontrol.security.SecretCipher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -19,30 +24,35 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.net.URI;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class ManagedNodeService {
 
     private static final Logger log = LoggerFactory.getLogger(ManagedNodeService.class);
+    private static final List<String> NODE_BLOCKING_ALLOCATION_STATES = List.of("PROVISIONING", "RETRYABLE", "ACTIVE");
 
     private final ManagedNodeRepository repository;
+    private final ResidentialAllocationRepository allocationRepository;
     private final NodeManagerClient client;
     private final ControlPlaneProperties properties;
-    private final Map<UUID, NodeRuntimeState> runtimeStates = new ConcurrentHashMap<>();
+    private final SecretCipher secretCipher;
 
     public ManagedNodeService(ManagedNodeRepository repository,
+                              ResidentialAllocationRepository allocationRepository,
                               NodeManagerClient client,
-                              ControlPlaneProperties properties) {
+                              ControlPlaneProperties properties,
+                              SecretCipher secretCipher) {
         this.repository = repository;
+        this.allocationRepository = allocationRepository;
         this.client = client;
         this.properties = properties;
+        this.secretCipher = secretCipher;
     }
 
     public List<NodeView> listNodes() {
@@ -62,31 +72,95 @@ public class ManagedNodeService {
                 nodes.stream().mapToLong(NodeView::connections).sum(),
                 nodes.stream().mapToLong(NodeView::upload).sum(),
                 nodes.stream().mapToLong(NodeView::download).sum(),
-                nodes.stream().mapToLong(NodeView::totalTraffic).sum()
+                nodes.stream().mapToLong(NodeView::totalTraffic).sum(),
+                allocationRepository.count((root, query, builder) -> builder.equal(root.get("state"), "ACTIVE")),
+                allocationRepository.count((root, query, builder) -> builder.equal(root.get("state"), "RETRYABLE"))
         );
     }
 
     @Transactional
     public NodeView register(RegisterNodeRequest request) {
         String baseUrl = normalizeBaseUrl(request.baseUrl());
+        String token = request.token().trim();
         repository.findByBaseUrl(baseUrl).ifPresent(node -> {
             throw new IllegalStateException("该节点地址已经注册");
         });
 
-        AgentInfo info = client.getAgentInfo(baseUrl, request.token().trim());
-        AgentHeartbeat heartbeat = client.getHeartbeat(new ManagedNode(request.name().trim(), baseUrl, request.token().trim()));
-        ManagedNode node = repository.save(new ManagedNode(request.name().trim(), baseUrl, request.token().trim()));
-        runtimeStates.put(node.getId(), NodeRuntimeState.online(info, heartbeat));
-        return toView(node);
+        AgentInfo info = client.getAgentInfo(baseUrl, token);
+        repository.findByRemoteNodeId(info.nodeId()).ifPresent(node -> {
+            throw new IllegalStateException("该 Node Manager nodeId 已经注册");
+        });
+        AgentHeartbeat heartbeat = client.getHeartbeat(new ManagedNode(request.name().trim(), baseUrl, token));
+        ManagedNode node = new ManagedNode(request.name().trim(), baseUrl, secretCipher.encrypt(token));
+        node.updateRegistration(
+                request.name().trim(),
+                baseUrl,
+                secretCipher.encrypt(token),
+                info,
+                request.maxUsers() == null ? properties.getProvisioning().getDefaultMaxUsers() : request.maxUsers());
+        if (request.maxUsers() != null) {
+            node.setMaxUsers(request.maxUsers());
+        }
+        node.recordHeartbeat(heartbeat);
+        return toView(repository.save(node));
+    }
+
+    @Transactional
+    public AgentRegistrationResponse registerAgent(AgentRegistrationRequest request) {
+        String baseUrl = normalizeBaseUrl(request.baseUrl());
+        String token = request.apiToken().trim();
+        AgentInfo info = client.getAgentInfo(baseUrl, token);
+        if (!request.nodeId().trim().equals(info.nodeId())) {
+            throw new IllegalArgumentException("注册的 nodeId 与 Node Manager 返回值不一致");
+        }
+        AgentHeartbeat heartbeat = client.getHeartbeat(new ManagedNode(request.name().trim(), baseUrl, token));
+        ManagedNode byRemoteId = repository.findByRemoteNodeId(info.nodeId()).orElse(null);
+        ManagedNode byBaseUrl = repository.findByBaseUrl(baseUrl).orElse(null);
+        if (byRemoteId != null && byBaseUrl != null && !byRemoteId.getId().equals(byBaseUrl.getId())) {
+            throw new IllegalStateException("nodeId 与 API 地址分别属于不同的已注册节点");
+        }
+        ManagedNode node = byRemoteId != null ? byRemoteId : byBaseUrl;
+        boolean created = node == null;
+        if (created) {
+            node = new ManagedNode(request.name().trim(), baseUrl, secretCipher.encrypt(token));
+        }
+        int maxUsers = request.maxUsers() == null
+                ? properties.getProvisioning().getDefaultMaxUsers()
+                : request.maxUsers();
+        node.updateRegistration(request.name().trim(), baseUrl, secretCipher.encrypt(token), info, maxUsers);
+        if (request.maxUsers() != null || created) {
+            node.setMaxUsers(maxUsers);
+        }
+        node.recordHeartbeat(heartbeat);
+        node = repository.save(node);
+        return new AgentRegistrationResponse(node.getId(), node.getRemoteNodeId(), node.getStatus(), created);
+    }
+
+    @Transactional
+    public NodeView updateNode(UUID nodeId, UpdateNodeRequest request) {
+        ManagedNode node = getNode(nodeId);
+        if (request.enabled() != null) {
+            node.setEnabled(request.enabled());
+        }
+        if (request.maintenance() != null) {
+            node.setMaintenance(request.maintenance());
+        }
+        if (request.maxUsers() != null) {
+            node.setMaxUsers(request.maxUsers());
+        }
+        return toView(repository.save(node));
     }
 
     @Transactional
     public void deleteNode(UUID nodeId) {
         ManagedNode node = getNode(nodeId);
+        if (allocationRepository.countByNodeIdAndStateIn(nodeId, NODE_BLOCKING_ALLOCATION_STATES) > 0) {
+            throw new IllegalStateException("节点仍有活动或待重试的自动开通记录，不能移除");
+        }
         repository.delete(node);
-        runtimeStates.remove(nodeId);
     }
 
+    @Transactional
     public NodeView refresh(UUID nodeId) {
         ManagedNode node = getNode(nodeId);
         refreshNode(node);
@@ -100,7 +174,18 @@ public class ManagedNodeService {
 
     @Scheduled(fixedDelayString = "${control-plane.heartbeat.interval-ms:15000}")
     public void refreshAll() {
-        repository.findAll().forEach(this::refreshNode);
+        repository.findAll().forEach(node -> {
+            try {
+                refreshPersisted(node.getId());
+            } catch (RuntimeException exception) {
+                log.warn("Could not persist heartbeat for node {}: {}", node.getId(), exception.getMessage());
+            }
+        });
+    }
+
+    @Transactional
+    public void refreshPersisted(UUID nodeId) {
+        refreshNode(getNode(nodeId));
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -123,40 +208,45 @@ public class ManagedNodeService {
 
     private void refreshNode(ManagedNode node) {
         try {
-            AgentHeartbeat heartbeat = client.getHeartbeat(node);
-            runtimeStates.compute(node.getId(), (id, current) -> NodeRuntimeState.online(
-                    current == null ? null : current.info(), heartbeat));
+            node.recordHeartbeat(client.getHeartbeat(node));
         } catch (RuntimeException exception) {
-            runtimeStates.compute(node.getId(), (id, current) -> NodeRuntimeState.offline(current, exception.getMessage()));
+            ControlPlaneProperties.Heartbeat heartbeat = properties.getHeartbeat();
+            node.recordHeartbeatFailure(
+                    exception.getMessage(),
+                    Math.max(1, heartbeat.getFailureThreshold()),
+                    Instant.now().minus(Duration.ofMillis(Math.max(1, heartbeat.getOfflineAfterMs()))));
         }
+        repository.save(node);
     }
 
     private NodeView toView(ManagedNode node) {
-        NodeRuntimeState state = runtimeStates.get(node.getId());
-        AgentHeartbeat heartbeat = state == null ? null : state.heartbeat();
-        AgentInfo info = state == null ? null : state.info();
         return new NodeView(
                 node.getId(),
                 node.getName(),
                 node.getBaseUrl(),
-                heartbeat != null ? heartbeat.nodeId() : info != null ? info.nodeId() : null,
-                state == null ? "unknown" : state.status(),
-                heartbeat == null ? null : heartbeat.host(),
-                heartbeat != null ? heartbeat.managerVersion() : info != null ? info.managerVersion() : null,
-                heartbeat == null ? null : heartbeat.singboxVersion(),
-                heartbeat == null ? null : heartbeat.singbox(),
-                heartbeat != null && heartbeat.apiAvailable(),
-                heartbeat == null ? 0 : heartbeat.cpu(),
-                heartbeat == null ? 0 : heartbeat.memory(),
-                heartbeat == null ? 0 : heartbeat.connections(),
-                heartbeat == null ? 0 : heartbeat.systemConnections(),
-                heartbeat == null ? 0 : heartbeat.userCount(),
-                heartbeat == null || heartbeat.traffic() == null ? 0 : heartbeat.traffic().upload(),
-                heartbeat == null || heartbeat.traffic() == null ? 0 : heartbeat.traffic().download(),
-                heartbeat == null || heartbeat.traffic() == null ? 0 : heartbeat.traffic().total(),
-                heartbeat == null ? null : heartbeat.reportedAt(),
-                state == null ? null : state.lastCheckedAt(),
-                state == null ? null : state.lastError(),
+                node.getRemoteNodeId(),
+                node.getStatus(),
+                node.getHost(),
+                node.getManagerVersion(),
+                node.getSingboxVersion(),
+                node.getSingbox(),
+                node.isApiAvailable(),
+                node.getCpu(),
+                node.getMemory(),
+                node.getConnections(),
+                node.getSystemConnections(),
+                node.getUserCount(),
+                node.getUpload(),
+                node.getDownload(),
+                node.getTotalTraffic(),
+                node.getReportedAt(),
+                node.getLastCheckedAt(),
+                node.getLastSuccessfulHeartbeatAt(),
+                node.getLastError(),
+                node.getConsecutiveFailures(),
+                node.isEnabled(),
+                node.isMaintenance(),
+                node.getMaxUsers(),
                 node.getCreatedAt()
         );
     }
@@ -177,28 +267,4 @@ public class ManagedNodeService {
         }
         return value;
     }
-
-    private record NodeRuntimeState(
-            String status,
-            AgentInfo info,
-            AgentHeartbeat heartbeat,
-            Instant lastCheckedAt,
-            String lastError
-    ) {
-        static NodeRuntimeState online(AgentInfo info, AgentHeartbeat heartbeat) {
-            String status = heartbeat.status() == null ? "online" : heartbeat.status();
-            return new NodeRuntimeState(status, info, heartbeat, Instant.now(), null);
-        }
-
-        static NodeRuntimeState offline(NodeRuntimeState current, String error) {
-            return new NodeRuntimeState(
-                    "offline",
-                    current == null ? null : current.info,
-                    current == null ? null : current.heartbeat,
-                    Instant.now(),
-                    error
-            );
-        }
-    }
 }
-

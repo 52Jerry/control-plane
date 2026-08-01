@@ -12,6 +12,7 @@ import com.example.nodecontrol.dto.RemoteModels.UserConnection;
 import com.example.nodecontrol.dto.RemoteModels.UserPage;
 import org.springframework.stereotype.Service;
 
+import java.util.Map;
 import java.util.UUID;
 
 @Service
@@ -19,18 +20,25 @@ public class NodeUserService {
 
     private final ManagedNodeService nodeService;
     private final NodeManagerClient client;
+    private final RemoteOperationService operationService;
 
-    public NodeUserService(ManagedNodeService nodeService, NodeManagerClient client) {
+    public NodeUserService(ManagedNodeService nodeService,
+                           NodeManagerClient client,
+                           RemoteOperationService operationService) {
         this.nodeService = nodeService;
         this.client = client;
+        this.operationService = operationService;
     }
 
     public UserPage listUsers(UUID nodeId, int page, int pageSize, String keyword) {
         return client.getUsers(nodeService.getNode(nodeId), page, pageSize, keyword);
     }
 
-    public CreateUserResponse createUser(UUID nodeId, CreateUserRequest request) {
-        return client.createUser(nodeService.getNode(nodeId), request);
+    public CreateUserResponse createUser(UUID nodeId, CreateUserRequest request, String idempotencyKey) {
+        ManagedNode node = nodeService.getNode(nodeId);
+        String key = idempotencyKey == null || idempotencyKey.isBlank() ? UUID.randomUUID().toString() : idempotencyKey.trim();
+        return operationService.execute(node, key, "CREATE_USER", request, CreateUserResponse.class,
+                () -> client.createUser(node, request, key));
     }
 
     public UserConnection getConnections(UUID nodeId, String userId) {
@@ -41,12 +49,18 @@ public class NodeUserService {
         return client.getTraffic(nodeService.getNode(nodeId), userId);
     }
 
-    public OperationResponse bindProxy(UUID nodeId, BindProxyRequest request) {
-        return client.bindProxy(nodeService.getNode(nodeId), request);
+    public OperationResponse bindProxy(UUID nodeId, BindProxyRequest request, String idempotencyKey) {
+        ManagedNode node = nodeService.getNode(nodeId);
+        String key = idempotencyKey == null || idempotencyKey.isBlank() ? UUID.randomUUID().toString() : idempotencyKey.trim();
+        return operationService.execute(node, key, "BIND_PROXY", request, OperationResponse.class,
+                () -> client.bindProxy(node, request, key));
     }
 
-    public OperationResponse deleteUser(UUID nodeId, String userId) {
-        return client.deleteUser(nodeService.getNode(nodeId), userId);
+    public OperationResponse deleteUser(UUID nodeId, String userId, String idempotencyKey) {
+        ManagedNode node = nodeService.getNode(nodeId);
+        String key = idempotencyKey == null || idempotencyKey.isBlank() ? UUID.randomUUID().toString() : idempotencyKey.trim();
+        return operationService.execute(node, key, "DELETE_USER", Map.of("userId", userId), OperationResponse.class,
+                () -> client.deleteUser(node, userId, key));
     }
 
     public ReloadResponse reload(UUID nodeId) {
@@ -56,4 +70,3 @@ public class NodeUserService {
         return response;
     }
 }
-
