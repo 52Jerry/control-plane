@@ -236,7 +236,7 @@ public class ProvisioningService {
             }
         });
         if (result == null) {
-            throw new IllegalStateException("Could not create allocation");
+            throw new IllegalStateException("创建节点分配记录失败");
         }
         return result;
     }
@@ -278,7 +278,7 @@ public class ProvisioningService {
             }
         });
         if (result == null) {
-            throw new IllegalStateException("Could not create proxy allocation");
+            throw new IllegalStateException("创建 SOCKS 节点分配记录失败");
         }
         return result;
     }
@@ -287,7 +287,7 @@ public class ProvisioningService {
         PreparedProvisioning prepared = transactionTemplate.execute(
                 status -> prepareLocked(allocationId, request));
         if (prepared == null) {
-            throw new IllegalStateException("Could not prepare allocation");
+            throw new IllegalStateException("准备节点开通任务失败");
         }
         return prepared;
     }
@@ -332,7 +332,7 @@ public class ProvisioningService {
         return nodes.stream()
                 .filter(this::hasCapacity)
                 .findFirst()
-                .orElseThrow(() -> new IllegalStateException("没有在线且有剩余容量的 Node Manager 节点"));
+                .orElseThrow(() -> new IllegalStateException("没有在线且有剩余容量的节点管理器"));
     }
 
     private boolean hasCapacity(ManagedNode node) {
@@ -360,7 +360,7 @@ public class ProvisioningService {
             return toView(allocation);
         });
         if (result == null) {
-            throw new IllegalStateException("Could not complete allocation");
+            throw new IllegalStateException("完成节点开通记录失败");
         }
         return result;
     }
@@ -638,7 +638,7 @@ public class ProvisioningService {
             throw new IllegalArgumentException("至少选择一种协议");
         }
         if (new LinkedHashSet<>(protocols).size() != protocols.size()) {
-            throw new IllegalArgumentException("protocols 不能包含重复值");
+            throw new IllegalArgumentException("协议列表不能包含重复值");
         }
     }
 
@@ -647,7 +647,7 @@ public class ProvisioningService {
             byte[] bytes = objectMapper.writeValueAsBytes(request);
             return sha256Hex(bytes);
         } catch (JsonProcessingException | NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("Could not hash provisioning request", exception);
+            throw new IllegalStateException("计算节点开通请求摘要失败", exception);
         }
     }
 
@@ -655,7 +655,7 @@ public class ProvisioningService {
         try {
             return sha256Hex(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("Could not hash provisioning key", exception);
+            throw new IllegalStateException("计算节点开通幂等键摘要失败", exception);
         }
     }
 

@@ -27,9 +27,18 @@ public class ControlPlaneProperties {
     }
 
     public static class Heartbeat {
+        private boolean scheduledEnabled = true;
         private long intervalMs = 15000;
         private int failureThreshold = 3;
         private long offlineAfterMs = 90000;
+
+        public boolean isScheduledEnabled() {
+            return scheduledEnabled;
+        }
+
+        public void setScheduledEnabled(boolean scheduledEnabled) {
+            this.scheduledEnabled = scheduledEnabled;
+        }
 
         public long getIntervalMs() {
             return intervalMs;
@@ -58,7 +67,7 @@ public class ControlPlaneProperties {
 
     public static class Bootstrap {
         private boolean enabled = true;
-        private String name = "Default Node";
+        private String name = "默认节点";
         private String baseUrl = "";
         private String token = "";
 

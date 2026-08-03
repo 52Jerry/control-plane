@@ -59,7 +59,7 @@ public class ResidentialAllocation {
 
     private Integer proxyPort;
 
-    @Column(length = 2048)
+    @Lob
     private String proxyUsernameCipher;
 
     @Column(length = 2048)

@@ -23,9 +23,26 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class ManagedNodeServiceTest {
+
+    @Test
+    void skipsScheduledHeartbeatWhenDisabled() {
+        ManagedNodeRepository repository = mock(ManagedNodeRepository.class);
+        ResidentialAllocationRepository allocationRepository = mock(ResidentialAllocationRepository.class);
+        NodeManagerClient client = mock(NodeManagerClient.class);
+        ControlPlaneProperties properties = new ControlPlaneProperties();
+        properties.getHeartbeat().setScheduledEnabled(false);
+        properties.getSecurity().setEncryptionKey("unit-test-encryption-key");
+        ManagedNodeService service = new ManagedNodeService(
+                repository, allocationRepository, client, properties, new SecretCipher(properties));
+
+        service.refreshAll();
+
+        verifyNoInteractions(repository, client);
+    }
 
     @Test
     void registersAndExposesHeartbeatWithoutLeakingToken() {

@@ -25,14 +25,14 @@ public class SecretCipher {
     public SecretCipher(ControlPlaneProperties properties) {
         String configuredKey = properties.getSecurity().getEncryptionKey();
         if (configuredKey == null || configuredKey.isBlank()) {
-            throw new IllegalStateException("CONTROL_PLANE_ENCRYPTION_KEY must not be empty");
+            throw new IllegalStateException("控制中心加密密钥不能为空");
         }
         try {
             byte[] keyBytes = MessageDigest.getInstance("SHA-256")
                     .digest(configuredKey.getBytes(StandardCharsets.UTF_8));
             this.key = new SecretKeySpec(keyBytes, "AES");
         } catch (GeneralSecurityException exception) {
-            throw new IllegalStateException("Could not initialize secret encryption", exception);
+            throw new IllegalStateException("敏感数据加密组件初始化失败", exception);
         }
     }
 
@@ -51,7 +51,7 @@ public class SecretCipher {
             System.arraycopy(encrypted, 0, payload, iv.length, encrypted.length);
             return PREFIX + Base64.getUrlEncoder().withoutPadding().encodeToString(payload);
         } catch (GeneralSecurityException exception) {
-            throw new IllegalStateException("Could not encrypt secret", exception);
+            throw new IllegalStateException("敏感数据加密失败", exception);
         }
     }
 
@@ -61,7 +61,7 @@ public class SecretCipher {
         }
         byte[] payload = Base64.getUrlDecoder().decode(storedValue.substring(PREFIX.length()));
         if (payload.length <= IV_LENGTH) {
-            throw new IllegalStateException("Encrypted secret payload is invalid");
+            throw new IllegalStateException("敏感数据密文格式无效");
         }
         byte[] iv = new byte[IV_LENGTH];
         byte[] encrypted = new byte[payload.length - IV_LENGTH];
@@ -72,7 +72,7 @@ public class SecretCipher {
             cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(TAG_LENGTH_BITS, iv));
             return new String(cipher.doFinal(encrypted), StandardCharsets.UTF_8);
         } catch (GeneralSecurityException exception) {
-            throw new IllegalStateException("Could not decrypt secret; verify CONTROL_PLANE_ENCRYPTION_KEY", exception);
+            throw new IllegalStateException("敏感数据解密失败，请检查控制中心加密密钥配置", exception);
         }
     }
 }

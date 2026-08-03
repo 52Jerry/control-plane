@@ -96,7 +96,7 @@ public class RemoteOperationService {
             byte[] bytes = objectMapper.writeValueAsBytes(request);
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
         } catch (JsonProcessingException | NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("Could not hash operation request", exception);
+            throw new IllegalStateException("计算节点操作请求摘要失败", exception);
         }
     }
 
@@ -104,7 +104,7 @@ public class RemoteOperationService {
         try {
             return objectMapper.writeValueAsString(response);
         } catch (JsonProcessingException exception) {
-            throw new IllegalStateException("Could not persist operation response", exception);
+            throw new IllegalStateException("保存节点操作响应失败", exception);
         }
     }
 
@@ -112,7 +112,7 @@ public class RemoteOperationService {
         try {
             return objectMapper.readValue(secretCipher.decrypt(responseCipher), responseType);
         } catch (JsonProcessingException exception) {
-            throw new IllegalStateException("Could not read persisted operation response", exception);
+            throw new IllegalStateException("读取已保存的节点操作响应失败", exception);
         }
     }
 }

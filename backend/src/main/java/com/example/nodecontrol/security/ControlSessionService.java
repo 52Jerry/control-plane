@@ -36,14 +36,14 @@ public class ControlSessionService {
         this.userRepository = userRepository;
         String keyMaterial = properties.getSecurity().getEncryptionKey();
         if (!StringUtils.hasText(keyMaterial)) {
-            throw new IllegalStateException("CONTROL_PLANE_ENCRYPTION_KEY must not be empty");
+            throw new IllegalStateException("控制中心加密密钥不能为空");
         }
         try {
             byte[] key = MessageDigest.getInstance("SHA-256")
                     .digest(("control-session:" + keyMaterial).getBytes(StandardCharsets.UTF_8));
             this.signingKey = new SecretKeySpec(key, "HmacSHA256");
         } catch (GeneralSecurityException exception) {
-            throw new IllegalStateException("Could not initialize control session signing", exception);
+            throw new IllegalStateException("控制中心登录会话签名组件初始化失败", exception);
         }
     }
 
@@ -131,7 +131,7 @@ public class ControlSessionService {
             return Base64.getUrlEncoder().withoutPadding()
                     .encodeToString(mac.doFinal(payload.getBytes(StandardCharsets.UTF_8)));
         } catch (GeneralSecurityException exception) {
-            throw new IllegalStateException("Could not sign control session", exception);
+            throw new IllegalStateException("控制中心登录会话签名失败", exception);
         }
     }
 

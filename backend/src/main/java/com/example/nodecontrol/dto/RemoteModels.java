@@ -92,10 +92,12 @@ public final class RemoteModels {
 
     public record ProxyConfig(
             String type,
-            @NotBlank @Size(max = 255) String server,
-            @Min(1) @Max(65535) int port,
-            @Size(max = 255) String username,
-            @Size(max = 255) String password
+            @NotBlank(message = "代理服务器不能为空")
+            @Size(max = 255, message = "代理服务器不能超过 255 个字符") String server,
+            @Min(value = 1, message = "代理端口不能小于 1")
+            @Max(value = 65535, message = "代理端口不能超过 65535") int port,
+            @Size(max = 255, message = "代理用户名不能超过 255 个字符") String username,
+            @Size(max = 255, message = "代理密码不能超过 255 个字符") String password
     ) {
         public ProxyConfig {
             type = type == null || type.isBlank() ? "socks5" : type;
@@ -103,10 +105,13 @@ public final class RemoteModels {
     }
 
     public record CreateUserRequest(
-            @NotBlank @Size(max = 64) @Pattern(regexp = "^[A-Za-z0-9._-]+$") String userId,
-            @NotEmpty List<@Pattern(regexp = "vless|vmess|socks") String> protocols,
-            @Size(max = 255) String socksUsername,
-            @Size(max = 255) String socksPassword,
+            @NotBlank(message = "用户 ID 不能为空")
+            @Size(max = 64, message = "用户 ID 不能超过 64 个字符")
+            @Pattern(regexp = "^[A-Za-z0-9._-]+$", message = "用户 ID 只能包含字母、数字、点、下划线和短横线") String userId,
+            @NotEmpty(message = "至少选择一种协议")
+            List<@Pattern(regexp = "vless|vmess|socks", message = "协议只支持 VLESS、VMess 或 SOCKS") String> protocols,
+            @Size(max = 255, message = "SOCKS 用户名不能超过 255 个字符") String socksUsername,
+            @Size(max = 255, message = "SOCKS 密码不能超过 255 个字符") String socksPassword,
             @Valid ProxyConfig proxy
     ) {
     }
@@ -124,7 +129,9 @@ public final class RemoteModels {
     }
 
     public record BindProxyRequest(
-            @NotBlank @Size(max = 64) @Pattern(regexp = "^[A-Za-z0-9._-]+$") String userId,
+            @NotBlank(message = "用户 ID 不能为空")
+            @Size(max = 64, message = "用户 ID 不能超过 64 个字符")
+            @Pattern(regexp = "^[A-Za-z0-9._-]+$", message = "用户 ID 只能包含字母、数字、点、下划线和短横线") String userId,
             @Valid ProxyConfig proxy
     ) {
     }

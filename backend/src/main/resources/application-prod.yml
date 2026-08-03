@@ -1,0 +1,56 @@
+# NiuSu Control Plane 生产配置。
+# 日常部署只需填写 .env.example 中列出的环境变量，其余项目使用安全默认值。
+
+server:
+  address: 0.0.0.0
+  port: 8090
+  forward-headers-strategy: framework
+
+spring:
+  config:
+    activate:
+      on-profile: prod
+
+  application:
+    name: node-control-plane
+
+  datasource:
+    # 一般只需填写 CONTROL_PLANE_DB_HOST；特殊场景可用 CONTROL_PLANE_DB_URL 覆盖完整地址。
+    url: ${CONTROL_PLANE_DB_URL:jdbc:mysql://${CONTROL_PLANE_DB_HOST}:${CONTROL_PLANE_DB_PORT:3306}/${CONTROL_PLANE_DB_NAME:control-plane}?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=true}
+    username: ${CONTROL_PLANE_DB_USERNAME}
+    password: ${CONTROL_PLANE_DB_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+      connection-timeout: 30000
+      connection-test-query: SELECT 1
+
+  jpa:
+    hibernate:
+      # 生产环境允许 Hibernate 对现有表进行增量更新。
+      ddl-auto: update
+    show-sql: false
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: false
+
+  jackson:
+    default-property-inclusion: non_null
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+control-plane:
+  bootstrap:
+    enabled: false
+
+  security:
+    registration-token: ${CONTROL_PLANE_REGISTRATION_TOKEN:}
+    encryption-key: ${CONTROL_PLANE_ENCRYPTION_KEY}
+    login-username: ${CONTROL_PLANE_LOGIN_USERNAME:}
+    login-password: ${CONTROL_PLANE_LOGIN_PASSWORD:}

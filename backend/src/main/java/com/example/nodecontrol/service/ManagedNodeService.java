@@ -88,7 +88,7 @@ public class ManagedNodeService {
 
         AgentInfo info = client.getAgentInfo(baseUrl, token);
         repository.findByRemoteNodeId(info.nodeId()).ifPresent(node -> {
-            throw new IllegalStateException("该 Node Manager nodeId 已经注册");
+            throw new IllegalStateException("该节点管理器标识已经注册");
         });
         AgentHeartbeat heartbeat = client.getHeartbeat(new ManagedNode(request.name().trim(), baseUrl, token));
         ManagedNode node = new ManagedNode(request.name().trim(), baseUrl, secretCipher.encrypt(token));
@@ -111,13 +111,13 @@ public class ManagedNodeService {
         String token = request.apiToken().trim();
         AgentInfo info = client.getAgentInfo(baseUrl, token);
         if (!request.nodeId().trim().equals(info.nodeId())) {
-            throw new IllegalArgumentException("注册的 nodeId 与 Node Manager 返回值不一致");
+            throw new IllegalArgumentException("注册的节点标识与节点管理器返回值不一致");
         }
         AgentHeartbeat heartbeat = client.getHeartbeat(new ManagedNode(request.name().trim(), baseUrl, token));
         ManagedNode byRemoteId = repository.findByRemoteNodeId(info.nodeId()).orElse(null);
         ManagedNode byBaseUrl = repository.findByBaseUrl(baseUrl).orElse(null);
         if (byRemoteId != null && byBaseUrl != null && !byRemoteId.getId().equals(byBaseUrl.getId())) {
-            throw new IllegalStateException("nodeId 与 API 地址分别属于不同的已注册节点");
+            throw new IllegalStateException("节点标识与 API 地址分别属于不同的已注册节点");
         }
         ManagedNode node = byRemoteId != null ? byRemoteId : byBaseUrl;
         boolean created = node == null;
@@ -174,11 +174,14 @@ public class ManagedNodeService {
 
     @Scheduled(fixedDelayString = "${control-plane.heartbeat.interval-ms:15000}")
     public void refreshAll() {
+        if (!properties.getHeartbeat().isScheduledEnabled()) {
+            return;
+        }
         repository.findAll().forEach(node -> {
             try {
                 refreshPersisted(node.getId());
             } catch (RuntimeException exception) {
-                log.warn("Could not persist heartbeat for node {}: {}", node.getId(), exception.getMessage());
+                log.warn("节点 {} 的心跳状态保存失败: {}", node.getId(), exception.getMessage());
             }
         });
     }
@@ -200,9 +203,9 @@ public class ManagedNodeService {
         }
         try {
             register(new RegisterNodeRequest(bootstrap.getName(), baseUrl, bootstrap.getToken()));
-            log.info("Bootstrapped Node Manager agent at {}", baseUrl);
+            log.info("已自动注册节点管理器: {}", baseUrl);
         } catch (RuntimeException exception) {
-            log.warn("Could not bootstrap Node Manager agent at {}: {}", baseUrl, exception.getMessage());
+            log.warn("节点管理器自动注册失败 {}: {}", baseUrl, exception.getMessage());
         }
     }
 

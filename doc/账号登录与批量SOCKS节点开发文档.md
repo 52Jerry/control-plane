@@ -162,6 +162,10 @@ socks5://<URL编码用户名>:<URL编码密码>@<主机>:<端口>
 
 - 生产环境必须使用 HTTPS 反向代理。
 - `.env.local`、systemd EnvironmentFile 和数据库备份需限制文件权限和访问范围。
+- Spring 配置按本地和生产拆分。服务器 EnvironmentFile 必须配置 `SPRING_PROFILES_ACTIVE=prod`；本地 IDEA 直接运行 `NodeControlApplication`，无需设置 Profile。
+- `application.yml` 是被 Git 忽略的本地 IDEA 配置；生产配置位于可提交但不包含真实秘密的 `application-prod.yml`。
+- 登录成功和管理页面业务数据加载分开处理：登录接口成功后立即关闭登录弹窗；节点或分配记录等后续接口失败时显示“部分数据加载失败”，不能把已成功的认证误报成账号密码错误或继续锁定登录弹窗。
+- `residential_allocations.proxy_username_cipher` 使用可空 `TEXT` 保存加密后的上游 SOCKS 用户名，避免历史表中大量 `VARCHAR` 导致 InnoDB 单行大小超过 65535 字节。
 - `CONTROL_PLANE_REGISTRATION_TOKEN` 只用于 Node Manager 注册，不能与管理密码或旧管理 Token 复用。
 - `CONTROL_PLANE_ADMIN_TOKEN` 仅用于兼容受信 API 客户端；不需要时应留空并迁移调用方到更细粒度认证。
 
@@ -185,7 +189,32 @@ python -m unittest discover -s tests -v
 
 自动测试覆盖首次账号初始化、BCrypt 哈希、账号创建/停用/重置/删除、旧 Cookie 撤销、Cookie 属性、账号 API 不返回密码哈希、旧 Token 兼容、两种数据格式、WPS/Excel 空白清理、无效行隔离、结果排序、Node Manager 上游参数、AES-GCM 密文和错误脱敏。
 
-## 6. 关键实现文件
+## 6. 数据库表边界与历史清理
+
+Control Plane 当前只使用以下 4 张业务表：
+
+- `control_users`：管理端账号与 BCrypt 密码哈希。
+- `managed_nodes`：已注册的 Node Manager 节点。
+- `remote_operations`：节点远程操作记录。
+- `residential_allocations`：生成的节点用户、连接和上游 SOCKS 分配信息。
+
+项目根目录的 `mysql/niusuip.sql` 属于 NiuSuIP 商品、订单、钱包和第三方接口业务库，不属于 Control Plane。该脚本不能在 `control-plane` 数据库中执行；需要使用时必须配置独立数据库。
+
+2026-08-02 已清理误建在阿里云 `control-plane` 数据库中的 25 张 NiuSuIP 历史表。删除前把表结构和 121 行数据备份到本地 Git 忽略目录：
+
+```text
+backend/data/control-plane-db-backups/legacy-niusuip-before-drop-20260802-205836.sql
+```
+
+备份文件 SHA-256：
+
+```text
+cc33e47a601cbd7f4a883297049fa2b8e7bf58aa613aad3f9d44cb3c4ad87b40
+```
+
+恢复历史表时，应先确认目标库不是正在运行的 Control Plane 生产库，再使用 MySQL 客户端导入该备份。数据库备份可能含业务数据，不得提交 Git、发送到公开渠道或放入前端静态资源。
+
+## 7. 关键实现文件
 
 - `frontend/src/App.vue`：登录、批量输入、结果和敏感信息生命周期。
 - `frontend/src/api.js`：同源 Cookie 请求、登录/退出和批量接口。

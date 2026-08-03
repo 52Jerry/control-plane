@@ -39,7 +39,8 @@ control-plane/
 ├─ backend/       Spring Boot 3.4 / Java 21 / JPA
 ├─ frontend/      Vue 3 / Vite
 ├─ scripts/       Windows 开发和构建脚本
-└─ .env.example   生产配置示例
+├─ .env.example   生产环境变量示例
+└─ .env.local.example  本地环境变量示例
 ```
 
 ## 数据库准备
@@ -53,19 +54,22 @@ GRANT ALL PRIVILEGES ON `control-plane`.* TO 'control_plane'@'%';
 
 ## 配置
 
-复制 `.env.example` 为 `.env.local`。生产环境至少必须设置以下变量：
+生产服务器复制 `.env.example` 为 `/etc/node-control-plane.env`。日常只需要填写下面 7 个值：
 
-| 环境变量 | 说明 |
-| --- | --- |
-| `CONTROL_PLANE_DB_URL` | 控制面 MySQL JDBC 地址 |
-| `CONTROL_PLANE_DB_USERNAME` / `CONTROL_PLANE_DB_PASSWORD` | 控制面数据库账号 |
-| `CONTROL_PLANE_ENCRYPTION_KEY` | 必填的长随机加密密钥，部署后不可随意更换 |
-| `CONTROL_PLANE_LOGIN_USERNAME` | 数据库账号表为空时，用于初始化第一个管理账号 |
-| `CONTROL_PLANE_LOGIN_PASSWORD` | 第一个管理账号的初始化密码，入库时只保存 BCrypt 哈希 |
-| `CONTROL_PLANE_SESSION_TTL_SECONDS` | 登录会话有效期，默认 `43200` 秒 |
-| `CONTROL_PLANE_ADMIN_TOKEN` | 旧 API 客户端兼容用 `X-Control-Token`，管理界面不再保存或使用它 |
-| `CONTROL_PLANE_REGISTRATION_TOKEN` | Node Manager 安装脚本专用注册令牌 |
-| `NODE_DEFAULT_MAX_USERS` | 新节点默认容量，默认 `500` |
+```dotenv
+SPRING_PROFILES_ACTIVE=prod
+
+CONTROL_PLANE_DB_HOST=数据库地址
+CONTROL_PLANE_DB_USERNAME=数据库账号
+CONTROL_PLANE_DB_PASSWORD=数据库密码
+
+CONTROL_PLANE_ENCRYPTION_KEY=长随机加密密钥
+CONTROL_PLANE_LOGIN_USERNAME=admin
+CONTROL_PLANE_LOGIN_PASSWORD=管理员密码
+CONTROL_PLANE_REGISTRATION_TOKEN=长随机节点注册令牌
+```
+
+默认数据库名为 `control-plane`，端口为 `3306`，Control Plane 监听 `8090`，新节点容量为 `500`，会话有效期为 12 小时。通常不需要再配置这些项目。特殊环境可以使用 `CONTROL_PLANE_DB_PORT`、`CONTROL_PLANE_DB_NAME` 或完整的 `CONTROL_PLANE_DB_URL` 覆盖数据库连接。
 
 可用 OpenSSL 生成密钥和令牌：
 
@@ -76,15 +80,12 @@ openssl rand -hex 32
 
 `CONTROL_PLANE_ENCRYPTION_KEY` 用于解密历史数据。更换它会导致已保存的 Node Manager Token 和连接信息无法读取。
 
-首次部署时，在 `.env.local` 配置第一个管理账号并启动服务：
+Spring 配置按环境拆分：
 
-```dotenv
-CONTROL_PLANE_LOGIN_USERNAME=admin
-CONTROL_PLANE_LOGIN_PASSWORD=replace-with-a-strong-password
-CONTROL_PLANE_SESSION_TTL_SECONDS=43200
-```
+- `application-prod.yml`：提交到 GitHub，服务器通过 `prod` Profile 使用，文件中不保存真实秘密。
+- `application.yml`：本地 IDEA 开发配置，被 Git 忽略且不上传 GitHub；直接运行 `NodeControlApplication` 时自动使用，真实秘密从被 Git 忽略的 `.env.local` 读取。
 
-启动时只有在 `control_users` 表为空的情况下，控制面才使用上述环境变量创建第一个账号。密码使用 BCrypt 哈希入库，不保存环境变量中的明文。数据库已经存在账号后，修改环境变量或重启服务不会覆盖任何账号。
+启动时只有在 `control_users` 表为空的情况下，控制面才使用配置的管理员账号密码创建第一个账号。密码使用 BCrypt 哈希入库。数据库已经存在账号后，修改环境变量或重启服务不会覆盖任何账号。
 
 登录后可通过右上角“账号管理”创建其他账号、启用或停用账号、重置密码和删除账号。所有启用账号目前拥有与初始管理员相同的 Control Plane 操作权限。重置密码、停用或删除账号会使该账号已有 Cookie 立即失效；不能停用或删除当前登录账号，系统也始终要求至少保留一个启用账号。生产环境必须通过 HTTPS 暴露管理端。
 
@@ -103,6 +104,30 @@ CONTROL_PLANE_SESSION_TTL_SECONDS=43200
 
 ## 本地开发
 
+### 一键启动本地完整版本
+
+Windows PowerShell 在项目根目录执行：
+
+```powershell
+.\start-local.ps1
+```
+
+脚本读取 Git 忽略的 `.env.local` 和本地 `application.yml`，连接阿里云 `control-plane` RDS。源码有更新时会自动构建前端和后端，启动后访问 `http://127.0.0.1:8090`。本地配置使用 `ddl-auto=none`，不允许 Hibernate 自动创建、校验或修改生产表；同时关闭自动节点心跳刷新，避免 IDEA 启动后周期性写回线上节点状态。
+
+如果需要强制重新构建：
+
+```powershell
+.\start-local.ps1 -Rebuild
+```
+
+首次使用前，必须在 `.env.local` 填写阿里云 RDS 密码，并安全复制服务器当前的 `CONTROL_PLANE_ENCRYPTION_KEY`。加密密钥必须与生产完全一致，不能新生成，否则已保存的节点 Token 和连接密文无法解密。登录时直接使用阿里云数据库 `control_users` 表中的启用账号。
+
+注意：本地服务连接的仍是线上阿里云数据库。`ddl-auto=none` 只禁止 Hibernate 自动建表和改表，并跳过启动时的结构校验；关闭自动心跳也只消除后台周期写入。在页面中新增/修改账号、节点、节点用户或执行删除、重试等手动操作，都会直接影响线上数据。若本地代码依赖尚未部署到线上数据库的新字段，对应功能仍会在访问时失败，应先通过生产发布流程完成数据库升级。
+
+在 IDEA 中直接运行 `NodeControlApplication` 即可，不需要设置 Active profiles、Program arguments 或数据库环境变量。本地 `application.yml` 会自动导入根目录中被 Git 忽略的 `.env.local`。Working directory 使用项目根目录或 `backend` 目录均可；日志显示默认 Profile 属于正常现象。
+
+### 前后端热更新开发
+
 ```powershell
 cd frontend
 npm.cmd install
@@ -110,11 +135,10 @@ npm.cmd run dev
 ```
 
 ```powershell
-cd backend
-mvn spring-boot:run
+./scripts/dev-backend.ps1
 ```
 
-前端默认访问 `http://localhost:5173`，后端为 `http://localhost:8090`，健康检查为 `/actuator/health`。
+前端默认访问 `http://localhost:5173`，后端为 `http://localhost:8090`，健康检查为 `/actuator/health`。`dev-backend.ps1` 会读取根目录 `.env.local`，后端自动使用本地 `application.yml`。
 
 ## 构建与运行
 
@@ -125,22 +149,32 @@ mvn spring-boot:run
 
 构建脚本先生成 Vue 静态资源，再打包到 Spring Boot JAR。生产环境建议以 systemd 运行 JAR，并通过 HTTPS 反向代理暴露控制面。
 
-## Node Manager 自动注册
+生产服务器的 EnvironmentFile 必须包含：
 
-control-plane 启动并配置注册令牌后，在每台 VPS 执行：
-
-```bash
-CONTROL_PLANE_URL="https://control.example.com" \
-CONTROL_PLANE_REGISTRATION_TOKEN="registration-secret" \
-NODE_MANAGER_PUBLIC_URL="http://VPS_PUBLIC_IP:8088" \
-NODE_MANAGER_NAME="us-vps-01" \
-NODE_MANAGER_NODE_ID="us-vps-01" \
-NODE_MANAGER_MAX_USERS="500" \
-CONTROL_PLANE_REGISTRATION_REQUIRED="1" \
-bash <(curl -Ls https://raw.githubusercontent.com/52Jerry/Node-Manager/main/install.sh)
+```dotenv
+SPRING_PROFILES_ACTIVE=prod
 ```
 
-安装脚本会复用已有 Node Manager API Token 和节点 ID，重装时更新原节点而不会生成重复记录。注册令牌仅通过 `X-Registration-Token` 请求头发送，不会写入信息文件。
+生产启动日志必须显示 `The following 1 profile is active: "prod"`。如果没有激活任何 Profile，应用将不会获得数据库和 Control Plane 配置，不应继续部署。
+
+## Node Manager 自动注册
+
+Control Plane 启动后，在 Node Manager VPS 上只需执行下面一条命令：
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/52Jerry/Node-Manager/main/install.sh) https://你的控制中心域名
+```
+
+脚本随后会提示“请输入 Control Plane 节点注册令牌”。输入 `/etc/node-control-plane.env` 中相同的 `CONTROL_PLANE_REGISTRATION_TOKEN`；输入内容不会显示在屏幕上。公网 IP、节点 ID、节点名称、API Token 和默认容量都会自动生成或识别。
+
+安装脚本会复用已有 Node Manager API Token 和节点 ID，重装时更新原节点而不会生成重复记录。请确保 Control Plane 能访问该 VPS 的 TCP `8088` 端口。
+
+无人值守安装仍可使用环境变量：
+
+```bash
+CONTROL_PLANE_REGISTRATION_TOKEN="节点注册令牌" \
+bash <(curl -Ls https://raw.githubusercontent.com/52Jerry/Node-Manager/main/install.sh) https://你的控制中心域名
+```
 
 ## 控制 API
 

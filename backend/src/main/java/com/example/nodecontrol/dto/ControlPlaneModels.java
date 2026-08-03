@@ -25,8 +25,10 @@ public final class ControlPlaneModels {
     }
 
     public record LoginRequest(
-            @NotBlank @Size(max = 128) String username,
-            @NotBlank @Size(max = 1024) String password
+            @NotBlank(message = "账号不能为空")
+            @Size(max = 128, message = "账号不能超过 128 个字符") String username,
+            @NotBlank(message = "密码不能为空")
+            @Size(max = 1024, message = "密码不能超过 1024 个字符") String password
     ) {
     }
 
@@ -34,15 +36,17 @@ public final class ControlPlaneModels {
     }
 
     public record CreateControlUserRequest(
-            @NotBlank @Size(min = 3, max = 64)
-            @Pattern(regexp = "^[A-Za-z0-9._-]+$") String username,
-            @NotBlank @Size(min = 10, max = 128) String password
+            @NotBlank(message = "账号不能为空")
+            @Size(min = 3, max = 64, message = "账号长度必须为 3-64 位")
+            @Pattern(regexp = "^[A-Za-z0-9._-]+$", message = "账号只能包含字母、数字、点、下划线和短横线") String username,
+            @NotBlank(message = "密码不能为空")
+            @Size(min = 10, max = 128, message = "密码长度必须为 10-128 位") String password
     ) {
     }
 
     public record UpdateControlUserRequest(
             Boolean enabled,
-            @Size(min = 10, max = 128) String password
+            @Size(min = 10, max = 128, message = "密码长度必须为 10-128 位") String password
     ) {
     }
 
@@ -58,10 +62,14 @@ public final class ControlPlaneModels {
     }
 
     public record RegisterNodeRequest(
-            @NotBlank @Size(max = 120) String name,
-            @NotBlank @Size(max = 500) String baseUrl,
-            @NotBlank @Size(max = 1024) String token,
-            @Min(1) @Max(100000) Integer maxUsers
+            @NotBlank(message = "节点名称不能为空")
+            @Size(max = 120, message = "节点名称不能超过 120 个字符") String name,
+            @NotBlank(message = "API 地址不能为空")
+            @Size(max = 500, message = "API 地址不能超过 500 个字符") String baseUrl,
+            @NotBlank(message = "访问令牌不能为空")
+            @Size(max = 1024, message = "访问令牌不能超过 1024 个字符") String token,
+            @Min(value = 1, message = "最大用户数不能小于 1")
+            @Max(value = 100000, message = "最大用户数不能超过 100000") Integer maxUsers
     ) {
         public RegisterNodeRequest(String name, String baseUrl, String token) {
             this(name, baseUrl, token, null);
@@ -69,13 +77,18 @@ public final class ControlPlaneModels {
     }
 
     public record AgentRegistrationRequest(
-            @NotBlank @Size(max = 128) String nodeId,
-            @NotBlank @Size(max = 120) String name,
-            @NotBlank @Size(max = 500) String baseUrl,
-            @NotBlank @Size(max = 1024) String apiToken,
-            @Size(max = 255) String host,
-            @Size(max = 64) String managerVersion,
-            @Min(1) @Max(100000) Integer maxUsers
+            @NotBlank(message = "节点标识不能为空")
+            @Size(max = 128, message = "节点标识不能超过 128 个字符") String nodeId,
+            @NotBlank(message = "节点名称不能为空")
+            @Size(max = 120, message = "节点名称不能超过 120 个字符") String name,
+            @NotBlank(message = "API 地址不能为空")
+            @Size(max = 500, message = "API 地址不能超过 500 个字符") String baseUrl,
+            @NotBlank(message = "访问令牌不能为空")
+            @Size(max = 1024, message = "访问令牌不能超过 1024 个字符") String apiToken,
+            @Size(max = 255, message = "主机信息不能超过 255 个字符") String host,
+            @Size(max = 64, message = "节点管理器版本不能超过 64 个字符") String managerVersion,
+            @Min(value = 1, message = "最大用户数不能小于 1")
+            @Max(value = 100000, message = "最大用户数不能超过 100000") Integer maxUsers
     ) {
     }
 
@@ -90,7 +103,8 @@ public final class ControlPlaneModels {
     public record UpdateNodeRequest(
             Boolean enabled,
             Boolean maintenance,
-            @Min(1) @Max(100000) Integer maxUsers
+            @Min(value = 1, message = "最大用户数不能小于 1")
+            @Max(value = 100000, message = "最大用户数不能超过 100000") Integer maxUsers
     ) {
     }
 
@@ -140,17 +154,23 @@ public final class ControlPlaneModels {
     }
 
     public record ProvisionRequest(
-            @NotBlank @Size(max = 64) @Pattern(regexp = "^[A-Za-z0-9._-]+$") String userId,
-            @NotEmpty List<@Pattern(regexp = "vless|vmess|socks") String> protocols,
+            @NotBlank(message = "用户 ID 不能为空")
+            @Size(max = 64, message = "用户 ID 不能超过 64 个字符")
+            @Pattern(regexp = "^[A-Za-z0-9._-]+$", message = "用户 ID 只能包含字母、数字、点、下划线和短横线") String userId,
+            @NotEmpty(message = "至少选择一种协议")
+            List<@Pattern(regexp = "vless|vmess|socks", message = "协议只支持 VLESS、VMess 或 SOCKS") String> protocols,
             UUID preferredNodeId
     ) {
     }
 
     public record ProxyProvisionRequest(
-            @NotBlank @Size(max = 50000) String input,
-            @NotEmpty List<@Pattern(regexp = "vless|vmess|socks") String> protocols,
+            @NotBlank(message = "请输入 SOCKS 节点信息")
+            @Size(max = 50000, message = "SOCKS 节点信息不能超过 50000 个字符") String input,
+            @NotEmpty(message = "至少选择一种协议")
+            List<@Pattern(regexp = "vless|vmess|socks", message = "协议只支持 VLESS、VMess 或 SOCKS") String> protocols,
             UUID preferredNodeId,
-            @Size(max = 32) @Pattern(regexp = "^[A-Za-z0-9._-]*$") String userPrefix
+            @Size(max = 32, message = "节点用户前缀不能超过 32 个字符")
+            @Pattern(regexp = "^[A-Za-z0-9._-]*$", message = "节点用户前缀只能包含字母、数字、点、下划线和短横线") String userPrefix
     ) {
     }
 

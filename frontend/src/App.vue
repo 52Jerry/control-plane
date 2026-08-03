@@ -11,6 +11,7 @@ const meta = ref({ version: '0.1.0', authRequired: false, passwordLoginEnabled: 
 const dashboard = ref({ nodeCount: 0, onlineNodeCount: 0, degradedNodeCount: 0, userCount: 0, connections: 0, totalTraffic: 0 })
 const nodes = ref([])
 const users = ref([])
+const userLoadError = ref('')
 const allocations = ref([])
 const controlAccounts = ref([])
 const userPage = reactive({ page: 1, pageSize: 20, total: 0, keyword: '' })
@@ -39,7 +40,7 @@ const revealBatchSecrets = ref(false)
 let refreshTimer
 let toastTimer
 
-const nodeForm = reactive({ name: 'VPS Node', baseUrl: 'http://server:8088', token: '', maxUsers: 500 })
+const nodeForm = reactive({ name: '服务器节点', baseUrl: 'http://server:8088', token: '', maxUsers: 500 })
 const nodeSettingsForm = reactive({ enabled: true, maintenance: false, maxUsers: 500 })
 const provisionForm = reactive({ userId: '', protocols: ['vless', 'vmess', 'socks'], preferredNodeId: '' })
 const userForm = reactive({
@@ -57,7 +58,7 @@ const proxyForm = reactive({ userId: '', server: '', port: 1080, username: '', p
 
 const selectedNode = computed(() => nodes.value.find((node) => node.id === selectedNodeId.value) || null)
 const totalPages = computed(() => Math.max(1, Math.ceil(userPage.total / userPage.pageSize)))
-const pageTitle = computed(() => selectedNode.value ? selectedNode.value.name : '节点控制面')
+const pageTitle = computed(() => selectedNode.value ? selectedNode.value.name : '节点控制中心')
 const allocatableNodes = computed(() => nodes.value.filter((node) => node.enabled && !node.maintenance && ['online', 'degraded'].includes(node.status) && node.userCount < node.maxUsers))
 const batchConnectionCount = computed(() => proxyBatchResults.value.reduce(
   (total, result) => total + connectionLinks(result.allocation?.connection).length,
@@ -77,7 +78,32 @@ function errorMessage(error) {
   } else {
     message = error.message || '操作失败'
   }
+  if (/Could not decrypt secret|CONTROL_PLANE_ENCRYPTION_KEY|敏感数据解密失败/i.test(message)) {
+    message = '敏感数据解密失败，请检查本地与服务器的加密密钥是否一致。'
+  }
+  const knownMessages = new Map([
+    ['Could not create allocation', '创建节点分配记录失败'],
+    ['Could not create proxy allocation', '创建 SOCKS 节点分配记录失败'],
+    ['Could not prepare allocation', '准备节点开通任务失败'],
+    ['Could not complete allocation', '完成节点开通记录失败'],
+    ['Could not hash provisioning request', '计算节点开通请求摘要失败'],
+    ['Could not hash provisioning key', '计算节点开通幂等键摘要失败'],
+    ['Could not hash operation request', '计算节点操作请求摘要失败'],
+    ['Could not persist operation response', '保存节点操作响应失败'],
+    ['Could not read persisted operation response', '读取已保存的节点操作响应失败'],
+    ['Unauthorized', '未授权'],
+    ['Forbidden', '无权执行此操作'],
+    ['Internal Server Error', '服务器内部错误'],
+  ])
+  knownMessages.forEach((localized, source) => {
+    message = message.replaceAll(source, localized)
+  })
+  message = message.replaceAll('Node Manager', '节点管理器')
   return redactKnownSecrets(message)
+}
+
+function localizedErrorMessage(value) {
+  return errorMessage({ message: value })
 }
 
 function redactKnownSecrets(value) {
@@ -127,6 +153,7 @@ function clearFormSecrets() {
 function clearBusinessData() {
   nodes.value = []
   users.value = []
+  userLoadError.value = ''
   allocations.value = []
   controlAccounts.value = []
   dashboard.value = { nodeCount: 0, onlineNodeCount: 0, degradedNodeCount: 0, userCount: 0, connections: 0, totalTraffic: 0 }
@@ -184,10 +211,12 @@ async function loadUsers(resetPage = false) {
   if (!selectedNodeId.value) {
     users.value = []
     userPage.total = 0
+    userLoadError.value = ''
     return
   }
   if (resetPage) userPage.page = 1
   loading.users = true
+  userLoadError.value = ''
   try {
     const data = await api.users(selectedNodeId.value, {
       page: userPage.page,
@@ -196,6 +225,11 @@ async function loadUsers(resetPage = false) {
     })
     users.value = data.items
     userPage.total = data.total
+  } catch (error) {
+    if (error.status === 401) throw error
+    users.value = []
+    userPage.total = 0
+    userLoadError.value = errorMessage(error)
   } finally {
     loading.users = false
   }
@@ -250,15 +284,21 @@ async function login() {
     })
     sessionUsername.value = session.username || loginForm.username.trim()
     loginForm.password = ''
-    await loadAll()
     modal.login = false
     notify('登录成功')
   } catch (error) {
     const message = error.status === 401 ? '账号或密码错误' : errorMessage(error)
     loginForm.password = ''
     notify(message, 'error')
+    return
   } finally {
     loading.action = false
+  }
+
+  try {
+    await loadAll()
+  } catch (error) {
+    if (error.status !== 401) notify(`登录成功，但节点数据读取失败：${errorMessage(error)}`, 'error')
   }
 }
 
@@ -608,12 +648,12 @@ async function reloadNode() {
 }
 
 async function removeNode(node) {
-  if (!confirm(`仅从控制面移除节点 ${node.name}，不会卸载服务器上的 Node Manager。继续？`)) return
+  if (!confirm(`仅从控制中心移除节点 ${node.name}，不会卸载服务器上的节点管理器。继续？`)) return
   try {
     await api.deleteNode(node.id)
     if (selectedNodeId.value === node.id) selectedNodeId.value = ''
     await loadAll()
-    notify('节点已从控制面移除')
+    notify('节点已从控制中心移除')
   } catch (error) {
     notify(errorMessage(error), 'error')
   }
@@ -772,7 +812,7 @@ onBeforeUnmount(() => {
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark"><CloudCog :size="21" /></div>
-        <div><strong>NiuSu Control</strong><span>Multi-node Control Plane</span></div>
+        <div><strong>牛速控制中心</strong><span>多节点统一管理</span></div>
       </div>
 
       <button class="nav-item active"><Gauge :size="17" />总览</button>
@@ -790,14 +830,14 @@ onBeforeUnmount(() => {
       <button class="add-node-link" @click="modal.node = true"><Plus :size="15" />添加节点</button>
 
       <div class="sidebar-footer">
-        <span>Control Plane</span><strong>v{{ meta.version }}</strong>
+        <span>控制中心</span><strong>v{{ meta.version }}</strong>
       </div>
     </aside>
 
     <main class="main-content">
       <header class="topbar">
         <div>
-          <p class="eyebrow">CONTROL PLANE / OVERVIEW</p>
+          <p class="eyebrow">控制中心 / 总览</p>
           <h1>{{ pageTitle }}</h1>
         </div>
         <div class="top-actions">
@@ -821,7 +861,7 @@ onBeforeUnmount(() => {
           <div class="server-glyph"><Server :size="22" /></div>
           <div>
             <div class="title-line"><h2>{{ selectedNode.name }}</h2><span class="status-pill" :class="selectedNode.status">{{ statusText(selectedNode.status) }}</span></div>
-            <p>{{ selectedNode.remoteNodeId || '等待 agent 信息' }} · {{ selectedNode.host || selectedNode.baseUrl }}</p>
+            <p>{{ selectedNode.remoteNodeId || '等待节点代理信息' }} · {{ selectedNode.host || selectedNode.baseUrl }}</p>
           </div>
         </div>
         <div class="node-stats">
@@ -839,12 +879,12 @@ onBeforeUnmount(() => {
           <span :class="selectedNode.enabled ? 'positive' : 'danger-text'"><Power :size="12" />{{ selectedNode.enabled ? '参与调度' : '已停用' }}</span>
           <span v-if="selectedNode.maintenance" class="warning"><Wrench :size="12" />维护模式</span>
         </div>
-        <p v-if="selectedNode.lastError" class="node-error">{{ selectedNode.lastError }}</p>
+        <p v-if="selectedNode.lastError" class="node-error">{{ localizedErrorMessage(selectedNode.lastError) }}</p>
       </section>
 
       <section class="panel proxy-batch-panel">
         <div class="panel-heading proxy-batch-heading">
-          <div><p class="eyebrow">BATCH SOCKS PROVISIONING</p><h2>节点信息输入</h2></div>
+          <div><p class="eyebrow">批量 SOCKS 节点生成</p><h2>节点信息输入</h2></div>
           <div class="batch-actions">
             <button class="button ghost icon-text" :disabled="batchConnectionCount === 0" @click="copyAllBatchLinks"><Copy :size="14" />复制所有链接</button>
             <button class="button primary icon-text" :disabled="loading.action || proxyBatchForm.protocols.length === 0" @click="provisionProxyBatch"><Link :size="15" />生成链接</button>
@@ -855,7 +895,7 @@ onBeforeUnmount(() => {
             <strong>支持两种格式</strong>
             <code>IP地址 域名 端口 用户名 密码</code>
             <code>序号 IP 域名 端口 用户名 密码</code>
-            <span>使用空格或 Tab 分隔；域名没有时填写 <code>-</code>。粘贴时自动移除 WPS/Excel 的 BOM、NBSP 和全角空格。</span>
+            <span>使用空格或制表符分隔；域名没有时填写 <code>-</code>。粘贴时自动清理 WPS/Excel 表格中的字节序标记、不换行空格和全角空格。</span>
           </div>
           <label class="proxy-input-label">批量 SOCKS 节点
             <textarea
@@ -864,14 +904,14 @@ onBeforeUnmount(() => {
               maxlength="50000"
               spellcheck="false"
               autocomplete="off"
-              placeholder="198.51.100.10 proxy.example.com 1080 username password&#10;2 198.51.100.11 - 1080 username password"
+              placeholder="198.51.100.10 proxy.example.com 1080 示例用户名 示例密码&#10;2 198.51.100.11 - 1080 示例用户名 示例密码"
               @paste="handleProxyPaste"
               @blur="cleanProxyBatchTextarea"
             ></textarea>
           </label>
           <div class="batch-options">
             <label>节点用户前缀<input v-model.trim="proxyBatchForm.userPrefix" required maxlength="32" pattern="[A-Za-z0-9._-]+" autocomplete="off" /></label>
-            <label>指定 Node Manager（可选）
+            <label>指定节点管理器（可选）
               <select v-model="proxyBatchForm.preferredNodeId"><option value="">自动选择最空闲节点</option><option v-for="node in allocatableNodes" :key="node.id" :value="node.id">{{ node.name }} · {{ node.userCount }}/{{ node.maxUsers }}</option></select>
             </label>
             <fieldset><legend>生成协议</legend><div class="checkbox-row"><label v-for="protocol in ['vless','vmess','socks']" :key="protocol"><input v-model="proxyBatchForm.protocols" type="checkbox" :value="protocol" />{{ protocol.toUpperCase() }}</label></div></fieldset>
@@ -892,7 +932,7 @@ onBeforeUnmount(() => {
                 <span v-if="result.error">校验/生成失败</span>
                 <span v-else>{{ result.sourceAddress }}:{{ result.sourcePort }} · {{ result.allocation?.userId }}</span>
               </div>
-              <p v-if="result.error" class="batch-error">{{ result.error }}</p>
+              <p v-if="result.error" class="batch-error">{{ localizedErrorMessage(result.error) }}</p>
               <div v-else class="batch-links">
                 <div v-for="linkItem in connectionLinks(result.allocation?.connection)" :key="linkItem.protocol">
                   <span>{{ linkItem.protocol }}</span>
@@ -907,18 +947,18 @@ onBeforeUnmount(() => {
 
       <section class="panel allocation-panel">
         <div class="panel-heading">
-          <div><p class="eyebrow">DIRECT PROVISIONING</p><h2>自动生成记录</h2></div>
+          <div><p class="eyebrow">直出节点生成</p><h2>自动生成记录</h2></div>
           <button class="button primary icon-text" :disabled="allocatableNodes.length === 0" @click="openProvision"><Plus :size="15" />生成直出节点</button>
         </div>
         <div class="table-wrap">
           <table class="allocation-table">
-            <thead><tr><th>用户</th><th>状态</th><th>Node Manager</th><th>出口模式</th><th>创建时间</th><th>操作</th></tr></thead>
+            <thead><tr><th>用户</th><th>状态</th><th>节点管理器</th><th>出口模式</th><th>创建时间</th><th>操作</th></tr></thead>
             <tbody>
               <tr v-if="loading.allocations"><td colspan="6" class="empty-state">正在加载自动开通记录...</td></tr>
               <tr v-else-if="allocations.length === 0"><td colspan="6" class="empty-state">暂无自动开通记录</td></tr>
               <tr v-for="allocation in allocations" :key="allocation.id">
                 <td><div class="user-cell"><span class="avatar">{{ allocation.userId.slice(0, 2).toUpperCase() }}</span><span><strong>{{ allocation.userId }}</strong><small>{{ allocation.protocols.join(' / ') }}</small></span></div></td>
-                <td><span class="allocation-state" :class="allocation.state.toLowerCase()">{{ allocationStateText(allocation.state) }}</span><small v-if="allocation.lastError" class="error-detail" :title="allocation.lastError">{{ allocation.lastError }}</small></td>
+                <td><span class="allocation-state" :class="allocation.state.toLowerCase()">{{ allocationStateText(allocation.state) }}</span><small v-if="allocation.lastError" class="error-detail" :title="localizedErrorMessage(allocation.lastError)">{{ localizedErrorMessage(allocation.lastError) }}</small></td>
                 <td><strong>{{ allocation.nodeName || '-' }}</strong><small class="table-subtext">{{ allocation.nodeHost || '等待节点' }}</small></td>
                 <td><strong>{{ allocation.provisioningMode === 'UPSTREAM_SOCKS' ? '上游 SOCKS' : 'VPS 直出' }}</strong><small class="table-subtext">{{ allocation.provisioningMode === 'UPSTREAM_SOCKS' ? `${allocation.proxyServer || '-'}:${allocation.proxyPort || '-'}` : (allocation.nodeHost || '等待选择节点') }}</small></td>
                 <td>{{ formatDate(allocation.createdAt) }}</td>
@@ -931,7 +971,7 @@ onBeforeUnmount(() => {
 
       <section class="panel users-panel">
         <div class="panel-heading">
-          <div><p class="eyebrow">USER ALLOCATION</p><h2>节点用户</h2></div>
+          <div><p class="eyebrow">节点用户管理</p><h2>节点用户</h2></div>
           <div class="table-tools">
             <input v-model="userPage.keyword" placeholder="搜索用户 ID" @keyup.enter="loadUsers(true)" />
             <button class="button ghost icon-text" @click="loadUsers(true)"><Search :size="14" />搜索</button>
@@ -943,6 +983,7 @@ onBeforeUnmount(() => {
             <thead><tr><th>用户</th><th>协议</th><th>出口模式</th><th>流量</th><th>创建时间</th><th>操作</th></tr></thead>
             <tbody>
               <tr v-if="loading.users"><td colspan="6" class="empty-state">正在加载节点用户…</td></tr>
+              <tr v-else-if="userLoadError"><td colspan="6" class="empty-state error-detail">节点用户加载失败：{{ userLoadError }}</td></tr>
               <tr v-else-if="!selectedNode"><td colspan="6" class="empty-state">请先添加并选择一个节点</td></tr>
               <tr v-else-if="users.length === 0"><td colspan="6" class="empty-state">当前节点暂无用户</td></tr>
               <tr v-for="user in users" :key="user.userId">
@@ -963,21 +1004,21 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="node-list-section">
-        <div class="section-title"><div><p class="eyebrow">NODE REGISTRY</p><h2>全部节点</h2></div><button class="button ghost icon-text" @click="modal.node = true"><Plus :size="14" />添加节点</button></div>
+        <div class="section-title"><div><p class="eyebrow">节点注册管理</p><h2>全部节点</h2></div><button class="button ghost icon-text" @click="modal.node = true"><Plus :size="14" />添加节点</button></div>
         <div class="node-grid">
           <article v-for="node in nodes" :key="node.id" class="compact-node" :class="{ selected: node.id === selectedNodeId }" @click="selectNode(node.id)">
             <div><span class="status-dot" :class="node.status"></span><strong>{{ node.name }}</strong></div>
             <p>{{ node.baseUrl }}</p>
             <dl><div><dt>状态</dt><dd>{{ node.maintenance ? '维护' : (node.enabled ? statusText(node.status) : '停用') }}</dd></div><div><dt>容量</dt><dd>{{ node.userCount }} / {{ node.maxUsers }}</dd></div><div><dt>流量</dt><dd>{{ formatBytes(node.totalTraffic) }}</dd></div></dl>
           </article>
-          <button v-if="nodes.length === 0" class="empty-node" @click="modal.node = true"><Plus :size="18" />注册第一个 Node Manager 节点</button>
+          <button v-if="nodes.length === 0" class="empty-node" @click="modal.node = true"><Plus :size="18" />注册第一个节点管理器</button>
         </div>
       </section>
     </main>
 
     <div v-if="modal.login" class="modal-backdrop locked">
       <form class="modal-card login-card" @submit.prevent="login">
-        <div class="brand-mark large"><ShieldCheck :size="26" /></div><p class="eyebrow">SECURE CONTROL PLANE</p><h2>登录 NiuSu Control</h2><p>使用后端配置的管理账号和密码登录。</p>
+        <div class="brand-mark large"><ShieldCheck :size="26" /></div><p class="eyebrow">安全管理登录</p><h2>登录牛速控制中心</h2><p>使用后端配置的管理账号和密码登录。</p>
         <p v-if="loginConfigurationError" class="login-error">{{ loginConfigurationError }}</p>
         <label>账号<input v-model.trim="loginForm.username" autocomplete="username" maxlength="128" required :disabled="Boolean(loginConfigurationError)" autofocus /></label>
         <label>密码<input v-model="loginForm.password" type="password" autocomplete="current-password" maxlength="1024" required :disabled="Boolean(loginConfigurationError)" /></label>
@@ -987,11 +1028,11 @@ onBeforeUnmount(() => {
 
     <div v-if="modal.accounts" class="modal-backdrop" @mousedown.self="closeAccountModal">
       <div class="modal-card accounts-card">
-        <div class="modal-heading"><div><p class="eyebrow">CONTROL ACCOUNTS</p><h2>管理账号</h2></div><button class="close-button" title="关闭" @click="closeAccountModal"><X :size="17" /></button></div>
-        <p class="form-note account-note">所有启用账号都拥有与当前账号相同的 Control Plane 操作权限。密码仅用于本次请求，不会写入浏览器存储。</p>
+        <div class="modal-heading"><div><p class="eyebrow">管理账号</p><h2>账号与权限管理</h2></div><button class="close-button" title="关闭" @click="closeAccountModal"><X :size="17" /></button></div>
+        <p class="form-note account-note">所有启用账号都拥有与当前账号相同的控制中心操作权限。密码仅用于本次请求，不会写入浏览器存储。</p>
 
         <form class="account-create-form" @submit.prevent="createControlAccount">
-          <label>新账号<input v-model.trim="accountForm.username" required minlength="3" maxlength="64" pattern="[A-Za-z0-9._-]+" autocomplete="off" placeholder="operator" /></label>
+          <label>新账号<input v-model.trim="accountForm.username" required minlength="3" maxlength="64" pattern="[A-Za-z0-9._-]+" autocomplete="off" placeholder="请输入管理账号" /></label>
           <label>初始密码<input v-model="accountForm.password" required type="password" minlength="10" maxlength="128" autocomplete="new-password" placeholder="至少 10 位" /></label>
           <button class="button primary icon-text" :disabled="loading.action"><Plus :size="15" />创建账号</button>
         </form>
@@ -1022,23 +1063,23 @@ onBeforeUnmount(() => {
 
     <div v-if="modal.node" class="modal-backdrop" @mousedown.self="closeNodeModal">
       <form class="modal-card" @submit.prevent="registerNode">
-        <div class="modal-heading"><div><p class="eyebrow">NODE REGISTRY</p><h2>注册 Node Manager</h2></div><button type="button" class="close-button" title="关闭" @click="closeNodeModal"><X :size="17" /></button></div>
+        <div class="modal-heading"><div><p class="eyebrow">节点注册管理</p><h2>注册节点管理器</h2></div><button type="button" class="close-button" title="关闭" @click="closeNodeModal"><X :size="17" /></button></div>
         <label>节点名称<input v-model.trim="nodeForm.name" required maxlength="120" /></label>
         <label>API 地址<input v-model.trim="nodeForm.baseUrl" required placeholder="http://server:8088" /></label>
-        <label>Bearer Token<input v-model.trim="nodeForm.token" required type="password" autocomplete="new-password" /></label>
+        <label>访问令牌<input v-model.trim="nodeForm.token" required type="password" autocomplete="new-password" /></label>
         <label>最大用户数<input v-model.number="nodeForm.maxUsers" required type="number" min="1" max="100000" /></label>
-        <p class="form-note">控制面会调用 <code>/api/agent/info</code> 与心跳接口验证节点，token 不会返回给前端。</p>
+        <p class="form-note">控制中心会调用 <code>/api/agent/info</code> 与心跳接口验证节点，访问令牌不会返回给前端。</p>
         <div class="modal-actions"><button type="button" class="button ghost" @click="closeNodeModal">取消</button><button class="button primary" :disabled="loading.action">验证并注册</button></div>
       </form>
     </div>
 
     <div v-if="modal.provision" class="modal-backdrop" @mousedown.self="modal.provision = false">
       <form class="modal-card wide-card" @submit.prevent="provisionDirect">
-        <div class="modal-heading"><div><p class="eyebrow">AUTOMATIC PROVISIONING</p><h2>生成 VPS 直出节点</h2></div><button type="button" class="close-button" title="关闭" @click="modal.provision = false"><X :size="17" /></button></div>
-        <div class="provision-intro"><Server :size="19" /><span>控制面会选择在线且有容量的 Node Manager，直接生成 VLESS、VMess 和 SOCKS5。连接使用 VPS 自身出口，不绑定上游代理。</span></div>
+        <div class="modal-heading"><div><p class="eyebrow">自动生成节点</p><h2>生成 VPS 直出节点</h2></div><button type="button" class="close-button" title="关闭" @click="modal.provision = false"><X :size="17" /></button></div>
+        <div class="provision-intro"><Server :size="19" /><span>控制中心会选择在线且有容量的节点管理器，直接生成 VLESS、VMess 和 SOCKS5。连接使用 VPS 自身出口，不绑定上游代理。</span></div>
         <div class="form-grid">
-          <label>用户 ID<input v-model.trim="provisionForm.userId" required pattern="[A-Za-z0-9._-]+" maxlength="64" placeholder="customer-10001" /></label>
-          <label>指定 Node Manager（可选）
+          <label>用户 ID<input v-model.trim="provisionForm.userId" required pattern="[A-Za-z0-9._-]+" maxlength="64" placeholder="请输入用户 ID" /></label>
+          <label>指定节点管理器（可选）
             <select v-model="provisionForm.preferredNodeId"><option value="">自动选择最空闲节点</option><option v-for="node in allocatableNodes" :key="node.id" :value="node.id">{{ node.name }} · {{ node.userCount }}/{{ node.maxUsers }}</option></select>
           </label>
         </div>
@@ -1049,7 +1090,7 @@ onBeforeUnmount(() => {
 
     <div v-if="modal.settings" class="modal-backdrop" @mousedown.self="modal.settings = false">
       <form class="modal-card" @submit.prevent="saveNodeSettings">
-        <div class="modal-heading"><div><p class="eyebrow">SCHEDULING POLICY</p><h2>节点调度设置</h2></div><button type="button" class="close-button" title="关闭" @click="modal.settings = false"><X :size="17" /></button></div>
+        <div class="modal-heading"><div><p class="eyebrow">节点调度策略</p><h2>节点调度设置</h2></div><button type="button" class="close-button" title="关闭" @click="modal.settings = false"><X :size="17" /></button></div>
         <label class="toggle-row"><input v-model="nodeSettingsForm.enabled" type="checkbox" /><span>允许自动分配新用户</span></label>
         <label class="toggle-row"><input v-model="nodeSettingsForm.maintenance" type="checkbox" /><span>维护模式（暂停新分配）</span></label>
         <label>最大用户数<input v-model.number="nodeSettingsForm.maxUsers" type="number" min="1" max="100000" required /></label>
@@ -1060,7 +1101,7 @@ onBeforeUnmount(() => {
 
     <div v-if="modal.user" class="modal-backdrop" @mousedown.self="closeUserModal">
       <form class="modal-card wide-card" @submit.prevent="createUser">
-        <div class="modal-heading"><div><p class="eyebrow">MANUAL USER</p><h2>手动创建节点用户</h2></div><button type="button" class="close-button" title="关闭" @click="closeUserModal"><X :size="17" /></button></div>
+        <div class="modal-heading"><div><p class="eyebrow">手动创建用户</p><h2>手动创建节点用户</h2></div><button type="button" class="close-button" title="关闭" @click="closeUserModal"><X :size="17" /></button></div>
         <div class="form-grid"><label>用户 ID<input v-model.trim="userForm.userId" required pattern="[A-Za-z0-9._-]+" /></label><label>SOCKS 用户名（可选）<input v-model.trim="userForm.socksUsername" autocomplete="off" /></label><label>SOCKS 密码（可选）<input v-model="userForm.socksPassword" type="password" autocomplete="new-password" /></label></div>
         <fieldset><legend>启用协议</legend><div class="checkbox-row"><label v-for="protocol in ['vless','vmess','socks']" :key="protocol"><input v-model="userForm.protocols" type="checkbox" :value="protocol" />{{ protocol.toUpperCase() }}</label></div></fieldset>
         <label class="toggle-row"><input v-model="userForm.useProxy" type="checkbox" /><span>创建时绑定住宅 SOCKS5 出口</span></label>
@@ -1071,7 +1112,7 @@ onBeforeUnmount(() => {
 
     <div v-if="modal.proxy" class="modal-backdrop" @mousedown.self="closeProxyModal">
       <form class="modal-card" @submit.prevent="bindProxy">
-        <div class="modal-heading"><div><p class="eyebrow">EGRESS BINDING</p><h2>绑定住宅出口</h2></div><button type="button" class="close-button" title="关闭" @click="closeProxyModal"><X :size="17" /></button></div>
+        <div class="modal-heading"><div><p class="eyebrow">出口代理绑定</p><h2>绑定住宅出口</h2></div><button type="button" class="close-button" title="关闭" @click="closeProxyModal"><X :size="17" /></button></div>
         <p class="form-note">用户：<strong>{{ proxyForm.userId }}</strong></p>
         <div class="form-grid"><label>代理服务器<input v-model.trim="proxyForm.server" required /></label><label>端口<input v-model.number="proxyForm.port" type="number" min="1" max="65535" required /></label><label>用户名<input v-model.trim="proxyForm.username" autocomplete="off" /></label><label>密码<input v-model="proxyForm.password" type="password" autocomplete="new-password" /></label></div>
         <div class="modal-actions"><button type="button" class="button ghost" @click="closeProxyModal">取消</button><button class="button primary" :disabled="loading.action">确认绑定</button></div>
@@ -1080,7 +1121,7 @@ onBeforeUnmount(() => {
 
     <div v-if="modal.connection" class="modal-backdrop" @mousedown.self="closeConnectionModal">
       <div class="modal-card connection-card">
-        <div class="modal-heading"><div><p class="eyebrow">CONNECTION PROFILE</p><h2>{{ connectionUser }}</h2></div><button class="close-button" title="关闭" @click="closeConnectionModal"><X :size="17" /></button></div>
+        <div class="modal-heading"><div><p class="eyebrow">连接信息</p><h2>{{ connectionUser }}</h2></div><button class="close-button" title="关闭" @click="closeConnectionModal"><X :size="17" /></button></div>
         <div v-if="connectionContext" class="connection-context"><span><Server :size="13" />{{ connectionContext.nodeName }} · {{ connectionContext.nodeHost }}</span><span><ShieldCheck :size="13" />{{ connectionData?.proxyBound ? '已绑定上游代理' : 'VPS 直出，未绑定上游代理' }}</span></div>
         <label class="reveal-toggle connection-reveal"><input v-model="revealConnectionSecrets" type="checkbox" /><component :is="revealConnectionSecrets ? EyeOff : Eye" :size="14" /><span>{{ revealConnectionSecrets ? '隐藏完整连接' : '显示完整连接' }}</span></label>
         <div v-if="connectionData" class="connection-list">
@@ -1092,7 +1133,7 @@ onBeforeUnmount(() => {
     </div>
 
     <transition name="toast"><div v-if="toast.visible" class="toast" :class="toast.type">{{ toast.message }}</div></transition>
-    <div v-if="loading.app" class="loading-screen"><div class="loader"></div><span>正在连接控制面…</span></div>
+    <div v-if="loading.app" class="loading-screen"><div class="loader"></div><span>正在连接控制中心…</span></div>
   </div>
 </template>
 
