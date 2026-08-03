@@ -52,6 +52,7 @@ export const api = {
   deleteControlAccount: (accountId) => request(`/api/control/accounts/${accountId}`, { method: 'DELETE' }),
   dashboard: () => request('/api/control/dashboard'),
   nodes: () => request('/api/control/nodes'),
+  createNodeInstallCommand: () => request('/api/control/node-installation', { method: 'POST' }),
   registerNode: (payload) => request('/api/control/nodes', { method: 'POST', body: JSON.stringify(payload) }),
   updateNode: (nodeId, payload) => request(`/api/control/nodes/${nodeId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   refreshNode: (nodeId) => request(`/api/control/nodes/${nodeId}/refresh`, { method: 'POST' }),

@@ -17,7 +17,7 @@ const controlAccounts = ref([])
 const userPage = reactive({ page: 1, pageSize: 20, total: 0, keyword: '' })
 const selectedNodeId = ref(localStorage.getItem('selected-node-id') || '')
 const loading = reactive({ app: true, nodes: false, users: false, allocations: false, action: false })
-const modal = reactive({ login: false, accounts: false, node: false, user: false, provision: false, connection: false, proxy: false, settings: false })
+const modal = reactive({ login: false, accounts: false, node: false, installation: false, user: false, provision: false, connection: false, proxy: false, settings: false })
 const toast = reactive({ visible: false, type: 'success', message: '' })
 const loginForm = reactive({ username: '', password: '' })
 const accountForm = reactive({ username: '', password: '' })
@@ -37,8 +37,13 @@ const proxyBatchForm = reactive({
 const proxyBatchResults = ref([])
 const proxyBatchSummary = reactive({ total: 0, succeeded: 0, failed: 0 })
 const revealBatchSecrets = ref(false)
+const installCommand = ref('')
+const installExpiresAt = ref('')
+const installNow = ref(Date.now())
 let refreshTimer
+let installTimer
 let toastTimer
+let installRequestVersion = 0
 
 const nodeForm = reactive({ name: '服务器节点', baseUrl: 'http://server:8088', token: '', maxUsers: 500 })
 const nodeSettingsForm = reactive({ enabled: true, maintenance: false, maxUsers: 500 })
@@ -64,6 +69,11 @@ const batchConnectionCount = computed(() => proxyBatchResults.value.reduce(
   (total, result) => total + connectionLinks(result.allocation?.connection).length,
   0,
 ))
+const installRemainingSeconds = computed(() => {
+  if (!installExpiresAt.value) return 0
+  return Math.max(0, Math.ceil((new Date(installExpiresAt.value).getTime() - installNow.value) / 1000))
+})
+const installExpired = computed(() => Boolean(installExpiresAt.value) && installRemainingSeconds.value <= 0)
 
 function notify(message, type = 'success') {
   clearTimeout(toastTimer)
@@ -116,6 +126,7 @@ function redactKnownSecrets(value) {
     userForm.socksPassword,
     userForm.proxyPassword,
     proxyForm.password,
+    installCommand.value.match(/niusu_[A-Za-z0-9_-]+/)?.[0],
   ].filter((secret) => secret && secret.length >= 3)
   secrets.forEach((secret) => { result = result.split(secret).join('***') })
   return result
@@ -160,18 +171,66 @@ function clearBusinessData() {
   userPage.total = 0
   clearConnectionDetails()
   clearBatchDetails()
+  clearNodeInstallation()
 }
 
 function requireLogin(message = '') {
   clearFormSecrets()
   clearBusinessData()
   loginConfigurationError.value = message
+  modal.installation = false
   modal.login = true
 }
 
 function closeNodeModal() {
   modal.node = false
   nodeForm.token = ''
+}
+
+function clearNodeInstallation() {
+  installRequestVersion += 1
+  installCommand.value = ''
+  installExpiresAt.value = ''
+  installNow.value = Date.now()
+}
+
+function closeNodeInstallation() {
+  modal.installation = false
+  clearNodeInstallation()
+}
+
+async function generateNodeInstallCommand() {
+  loading.action = true
+  clearNodeInstallation()
+  const requestVersion = installRequestVersion
+  try {
+    const response = await api.createNodeInstallCommand()
+    if (requestVersion !== installRequestVersion) return
+    installCommand.value = response.command || ''
+    installExpiresAt.value = response.expiresAt || ''
+    installNow.value = Date.now()
+  } catch (error) {
+    if (requestVersion !== installRequestVersion) return
+    notify(errorMessage(error), 'error')
+  } finally {
+    if (requestVersion === installRequestVersion || !modal.installation) loading.action = false
+  }
+}
+
+async function openNodeInstallation() {
+  modal.installation = true
+  await generateNodeInstallCommand()
+}
+
+async function copyNodeInstallCommand() {
+  if (!installCommand.value || installExpired.value) return
+  await copy(installCommand.value)
+}
+
+function formatCountdown(seconds) {
+  const minutes = Math.floor(seconds / 60)
+  const remainder = seconds % 60
+  return `${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
 }
 
 function closeAccountModal() {
@@ -796,11 +855,13 @@ onMounted(async () => {
   refreshTimer = setInterval(() => {
     if (!modal.login) Promise.all([loadNodes(), loadAllocations()]).catch(() => {})
   }, 15000)
+  installTimer = setInterval(() => { installNow.value = Date.now() }, 1000)
 })
 
 onBeforeUnmount(() => {
   setUnauthorizedHandler(null)
   clearInterval(refreshTimer)
+  clearInterval(installTimer)
   clearTimeout(toastTimer)
   clearFormSecrets()
   clearBusinessData()
@@ -1004,7 +1065,13 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="node-list-section">
-        <div class="section-title"><div><p class="eyebrow">节点注册管理</p><h2>全部节点</h2></div><button class="button ghost icon-text" @click="modal.node = true"><Plus :size="14" />添加节点</button></div>
+        <div class="section-title">
+          <div><p class="eyebrow">节点注册管理</p><h2>全部节点</h2></div>
+          <div class="node-list-actions">
+            <button class="button primary icon-text" :disabled="loading.action" @click="openNodeInstallation"><Server :size="14" />一键安装 Node Manager</button>
+            <button class="button ghost icon-text" @click="modal.node = true"><Plus :size="14" />手动添加节点</button>
+          </div>
+        </div>
         <div class="node-grid">
           <article v-for="node in nodes" :key="node.id" class="compact-node" :class="{ selected: node.id === selectedNodeId }" @click="selectNode(node.id)">
             <div><span class="status-dot" :class="node.status"></span><strong>{{ node.name }}</strong></div>
@@ -1071,6 +1138,31 @@ onBeforeUnmount(() => {
         <p class="form-note">控制中心会调用 <code>/api/agent/info</code> 与心跳接口验证节点，访问令牌不会返回给前端。</p>
         <div class="modal-actions"><button type="button" class="button ghost" @click="closeNodeModal">取消</button><button class="button primary" :disabled="loading.action">验证并注册</button></div>
       </form>
+    </div>
+
+    <div v-if="modal.installation" class="modal-backdrop" @mousedown.self="closeNodeInstallation">
+      <div class="modal-card wide-card installation-card">
+        <div class="modal-heading"><div><p class="eyebrow">自动部署与注册</p><h2>一键安装 Node Manager</h2></div><button type="button" class="close-button" title="关闭" @click="closeNodeInstallation"><X :size="17" /></button></div>
+        <div class="provision-intro"><Server :size="19" /><span>把下面命令复制到目标 VPS 的 root 终端执行。脚本会从 GitHub 安装 Node Manager、获取公网 IP 和主机信息、生成节点 API Token，并自动注册到当前控制中心。</span></div>
+
+        <div v-if="installCommand" class="install-command-wrap">
+          <div class="install-command-meta">
+            <span :class="installExpired ? 'danger-text' : 'positive'"><ShieldCheck :size="13" />{{ installExpired ? '安装命令已过期' : `一次性安装码剩余 ${formatCountdown(installRemainingSeconds)}` }}</span>
+            <span>{{ formatDate(installExpiresAt) }} 失效</span>
+          </div>
+          <div class="install-command"><code>{{ installCommand }}</code><button type="button" title="复制安装命令" :disabled="installExpired" @click="copyNodeInstallCommand"><Copy :size="16" /></button></div>
+        </div>
+        <div v-else class="install-command-loading">{{ loading.action ? '正在生成安全的一次性安装命令…' : '安装命令生成失败，请重试。' }}</div>
+
+        <ul class="installation-notes">
+          <li>支持 Ubuntu / Debian，必须使用 root 执行，并能访问 GitHub 和当前 Control Plane。</li>
+          <li>安装码只允许成功使用一次，不会保存到浏览器存储；关闭弹窗或退出登录后会立即从页面内存清除。</li>
+          <li>Control Plane 必须能访问 VPS 的 TCP 8088；请同步放行云安全组和 VPS 防火墙。</li>
+          <li>命令过期或已经成功使用时，点击“重新生成”即可，不需要查找长期注册令牌。</li>
+        </ul>
+
+        <div class="modal-actions"><button type="button" class="button ghost" @click="closeNodeInstallation">关闭</button><button type="button" class="button secondary" :disabled="loading.action" @click="generateNodeInstallCommand">重新生成</button><button type="button" class="button primary icon-text" :disabled="!installCommand || installExpired" @click="copyNodeInstallCommand"><Copy :size="15" />复制安装命令</button></div>
+      </div>
     </div>
 
     <div v-if="modal.provision" class="modal-backdrop" @mousedown.self="modal.provision = false">

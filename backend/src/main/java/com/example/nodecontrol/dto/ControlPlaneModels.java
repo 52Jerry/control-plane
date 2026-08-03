@@ -100,6 +100,13 @@ public final class ControlPlaneModels {
     ) {
     }
 
+    public record NodeInstallCommandResponse(
+            String command,
+            Instant expiresAt,
+            long expiresInSeconds
+    ) {
+    }
+
     public record UpdateNodeRequest(
             Boolean enabled,
             Boolean maintenance,

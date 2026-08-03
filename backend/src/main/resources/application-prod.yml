@@ -46,6 +46,9 @@ management:
         include: health,info
 
 control-plane:
+  # 可选。反向代理正确传递 X-Forwarded-* 时可留空；多层代理时建议填写公网 HTTPS 地址。
+  public-url: ${CONTROL_PLANE_PUBLIC_URL:}
+
   bootstrap:
     enabled: false
 
@@ -54,3 +57,7 @@ control-plane:
     encryption-key: ${CONTROL_PLANE_ENCRYPTION_KEY}
     login-username: ${CONTROL_PLANE_LOGIN_USERNAME:}
     login-password: ${CONTROL_PLANE_LOGIN_PASSWORD:}
+
+  installation:
+    token-ttl-seconds: ${CONTROL_PLANE_INSTALL_TOKEN_TTL_SECONDS:600}
+    claim-ttl-seconds: ${CONTROL_PLANE_INSTALL_CLAIM_TTL_SECONDS:120}

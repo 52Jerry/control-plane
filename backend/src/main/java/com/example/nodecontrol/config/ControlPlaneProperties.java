@@ -9,6 +9,8 @@ public class ControlPlaneProperties {
     private final Bootstrap bootstrap = new Bootstrap();
     private final Security security = new Security();
     private final Provisioning provisioning = new Provisioning();
+    private final Installation installation = new Installation();
+    private String publicUrl = "";
 
     public Heartbeat getHeartbeat() {
         return heartbeat;
@@ -24,6 +26,18 @@ public class ControlPlaneProperties {
 
     public Provisioning getProvisioning() {
         return provisioning;
+    }
+
+    public Installation getInstallation() {
+        return installation;
+    }
+
+    public String getPublicUrl() {
+        return publicUrl;
+    }
+
+    public void setPublicUrl(String publicUrl) {
+        this.publicUrl = publicUrl;
     }
 
     public static class Heartbeat {
@@ -179,6 +193,36 @@ public class ControlPlaneProperties {
 
         public void setOperationStaleAfterMs(long operationStaleAfterMs) {
             this.operationStaleAfterMs = operationStaleAfterMs;
+        }
+    }
+
+    public static class Installation {
+        private long tokenTtlSeconds = 600;
+        private long claimTtlSeconds = 120;
+        private String scriptUrl = "https://raw.githubusercontent.com/52Jerry/Node-Manager/main/install.sh";
+
+        public long getTokenTtlSeconds() {
+            return tokenTtlSeconds;
+        }
+
+        public void setTokenTtlSeconds(long tokenTtlSeconds) {
+            this.tokenTtlSeconds = tokenTtlSeconds;
+        }
+
+        public long getClaimTtlSeconds() {
+            return claimTtlSeconds;
+        }
+
+        public void setClaimTtlSeconds(long claimTtlSeconds) {
+            this.claimTtlSeconds = claimTtlSeconds;
+        }
+
+        public String getScriptUrl() {
+            return scriptUrl;
+        }
+
+        public void setScriptUrl(String scriptUrl) {
+            this.scriptUrl = scriptUrl;
         }
     }
 

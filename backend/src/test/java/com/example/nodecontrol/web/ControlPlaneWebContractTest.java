@@ -5,8 +5,11 @@ import com.example.nodecontrol.dto.ControlPlaneModels.AllocationView;
 import com.example.nodecontrol.dto.ControlPlaneModels.ProxyProvisionBatchResponse;
 import com.example.nodecontrol.dto.RemoteModels.SocksConnection;
 import com.example.nodecontrol.dto.RemoteModels.UserConnection;
+import com.example.nodecontrol.domain.NodeInstallToken;
+import com.example.nodecontrol.domain.NodeInstallTokenRepository;
 import com.example.nodecontrol.security.ControlSessionService;
 import com.example.nodecontrol.service.ManagedNodeService;
+import com.example.nodecontrol.service.NodeInstallationService;
 import com.example.nodecontrol.service.ProvisioningService;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.Test;
@@ -21,10 +24,13 @@ import org.springframework.test.web.servlet.MvcResult;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -59,6 +65,9 @@ class ControlPlaneWebContractTest {
     @MockitoBean
     private ProvisioningService provisioningService;
 
+    @Autowired
+    private NodeInstallTokenRepository installTokenRepository;
+
     @Test
     void registrationUsesSeparateRegistrationToken() throws Exception {
         String body = """
@@ -92,9 +101,106 @@ class ControlPlaneWebContractTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
                 .andExpect(jsonPath("$.id").value(id.toString()))
                 .andExpect(jsonPath("$.created").value(true));
         verify(managedNodeService).registerAgent(any());
+    }
+
+    @Test
+    void passwordSessionCreatesOneTimeInstallCommandThatRegistersOnlyOnce() throws Exception {
+        mockMvc.perform(post("/api/control/node-installation"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string("Cache-Control", "no-store"));
+
+        Cookie adminCookie = loginCookie("control-admin", "login-secret");
+        MvcResult commandResult = mockMvc.perform(post("/api/control/node-installation")
+                        .cookie(adminCookie))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.command").value(org.hamcrest.Matchers.containsString(
+                        "raw.githubusercontent.com/52Jerry/Node-Manager/main/install.sh")))
+                .andExpect(jsonPath("$.expiresAt").exists())
+                .andExpect(jsonPath("$.expiresInSeconds").value(600))
+                .andReturn();
+
+        String command = com.jayway.jsonpath.JsonPath.read(
+                commandResult.getResponse().getContentAsString(), "$.command");
+        Matcher matcher = Pattern.compile("niusu_[A-Za-z0-9_-]+").matcher(command);
+        assertThat(matcher.find()).isTrue();
+        String installToken = matcher.group();
+        assertThat(installTokenRepository.findAll())
+                .anySatisfy(token -> assertThat(token.getTokenHash())
+                        .isEqualTo(NodeInstallationService.hash(installToken)));
+        assertThat(installTokenRepository.findAll())
+                .allSatisfy(token -> assertThat(token.getTokenHash()).doesNotContain(installToken));
+
+        UUID id = UUID.randomUUID();
+        when(managedNodeService.registerAgent(any()))
+                .thenReturn(new AgentRegistrationResponse(id, "one-click-node", "online", true));
+        String body = registrationBody("one-click-node");
+        mockMvc.perform(post("/api/control/agent/register")
+                        .header("X-Install-Token", installToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.id").value(id.toString()));
+
+        mockMvc.perform(post("/api/control/agent/register")
+                        .header("X-Install-Token", installToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isUnauthorized());
+        verify(managedNodeService, times(1)).registerAgent(any());
+    }
+
+    @Test
+    void failedNodeVerificationReleasesInstallTokenForInstallerRetry() throws Exception {
+        Cookie adminCookie = loginCookie("control-admin", "login-secret");
+        MvcResult commandResult = mockMvc.perform(post("/api/control/node-installation").cookie(adminCookie))
+                .andExpect(status().isOk())
+                .andReturn();
+        String command = com.jayway.jsonpath.JsonPath.read(
+                commandResult.getResponse().getContentAsString(), "$.command");
+        Matcher matcher = Pattern.compile("niusu_[A-Za-z0-9_-]+").matcher(command);
+        assertThat(matcher.find()).isTrue();
+        String installToken = matcher.group();
+        UUID id = UUID.randomUUID();
+        when(managedNodeService.registerAgent(any()))
+                .thenThrow(new IllegalArgumentException("节点尚未就绪"))
+                .thenReturn(new AgentRegistrationResponse(id, "retry-node", "online", true));
+        String body = registrationBody("retry-node");
+
+        mockMvc.perform(post("/api/control/agent/register")
+                        .header("X-Install-Token", installToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(post("/api/control/agent/register")
+                        .header("X-Install-Token", installToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk());
+        verify(managedNodeService, times(2)).registerAgent(any());
+    }
+
+    @Test
+    void expiredInstallTokenCannotRegisterNode() throws Exception {
+        String rawToken = "niusu_expired_web_contract_token";
+        Instant now = Instant.now();
+        installTokenRepository.save(new NodeInstallToken(
+                NodeInstallationService.hash(rawToken),
+                "test",
+                now.minusSeconds(120),
+                now.minusSeconds(60)));
+
+        mockMvc.perform(post("/api/control/agent/register")
+                        .header("X-Install-Token", rawToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(registrationBody("expired-node")))
+                .andExpect(status().isUnauthorized());
+        verify(managedNodeService, times(0)).registerAgent(any());
     }
 
     @Test
@@ -294,6 +400,20 @@ class ControlPlaneWebContractTest {
         String pair = setCookie.split(";", 2)[0];
         String[] nameAndValue = pair.split("=", 2);
         return new Cookie(nameAndValue[0], nameAndValue[1]);
+    }
+
+    private String registrationBody(String nodeId) {
+        return """
+                {
+                  "nodeId":"%s",
+                  "name":"One-click Node",
+                  "baseUrl":"http://203.0.113.10:8088",
+                  "apiToken":"node-token",
+                  "host":"203.0.113.10",
+                  "managerVersion":"1.4.1",
+                  "maxUsers":500
+                }
+                """.formatted(nodeId);
     }
 
     private Cookie loginCookie(String username, String password) throws Exception {

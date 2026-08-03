@@ -2,10 +2,11 @@
 
 ## 1. 功能范围
 
-本次实现包含两条完整链路：
+当前实现包含三条完整链路：
 
 1. 管理端从浏览器保存 `X-Control-Token` 改为数据库多账号登录，后端签发 HttpOnly Cookie 会话。
 2. 首页增加“节点信息输入”，批量校验上游 SOCKS 数据，并在可用 Node Manager 上生成节点用户及 VLESS、VMess、SOCKS5 连接。
+3. 页面生成短时一次性安装命令，在 VPS 上自动安装 Node Manager 并注册到当前 Control Plane。
 
 原有 VPS 直出、手动创建用户、绑定住宅出口和旧 `X-Control-Token` API 兼容能力继续保留。
 
@@ -189,12 +190,46 @@ python -m unittest discover -s tests -v
 
 自动测试覆盖首次账号初始化、BCrypt 哈希、账号创建/停用/重置/删除、旧 Cookie 撤销、Cookie 属性、账号 API 不返回密码哈希、旧 Token 兼容、两种数据格式、WPS/Excel 空白清理、无效行隔离、结果排序、Node Manager 上游参数、AES-GCM 密文和错误脱敏。
 
-## 6. 数据库表边界与历史清理
+## 6. 一键安装 Node Manager
 
-Control Plane 当前只使用以下 4 张业务表：
+### 6.1 页面流程
+
+管理员在“全部节点”区域点击“一键安装 Node Manager”，前端请求：
+
+```http
+POST /api/control/node-installation
+```
+
+该接口要求有效的管理 Cookie 或兼容管理 Token，并返回 `Cache-Control: no-store`。响应只包含当前安装命令、失效时间和有效秒数。前端只把命令保存在 Vue 运行内存，关闭弹窗、退出登录、会话失效或页面卸载都会清除。
+
+`CONTROL_PLANE_PUBLIC_URL` 可选；配置后作为命令中的权威公网地址。未配置时，后端根据请求和 Spring 的 forwarded-header 处理结果推导当前 Control Plane 地址。生产反向代理必须正确传递 `X-Forwarded-Proto` 和 `X-Forwarded-Host`。
+
+### 6.2 一次性安装码
+
+- 使用 `SecureRandom` 生成 32 字节随机值，格式为 `niusu_<base64url>`。
+- 默认有效期 600 秒，可用 `CONTROL_PLANE_INSTALL_TOKEN_TTL_SECONDS` 调整。
+- 数据库 `node_install_tokens` 表只保存 SHA-256 摘要、创建者、创建/过期时间、占用和使用状态，不保存明文。
+- 注册接口使用 `X-Install-Token`；旧 `X-Registration-Token` 长期令牌继续兼容。
+- 注册前通过原子更新将安装码置为占用状态，防止两个 VPS 并发复用。
+- Node Manager 验证或节点保存失败时释放占用，允许脚本按照 0/2/4/8/16 秒退避重试。
+- 节点注册成功后记录 `usedAt` 和节点 UUID，该安装码永久失效。
+- 卡死占用默认 120 秒后可重新获取，可用 `CONTROL_PLANE_INSTALL_CLAIM_TTL_SECONDS` 调整。
+
+### 6.3 安装脚本行为
+
+页面生成命令把 Control Plane 地址和一次性安装码作为两个参数传给 GitHub `main` 分支的 `install.sh`。脚本自动获取 VPS 公网 IP、复用或生成稳定节点 ID 与 API Token、安装并启动 sing-box 和 Node Manager，健康检查通过后用 `X-Install-Token` 注册。
+
+安装码只写入权限为 `0600` 的临时 Header 文件，注册完成或脚本退出时删除，不写入 `/root/node-manager-info.txt`。命令可能进入 VPS Shell 历史，因此未使用的命令不能公开转发；成功使用或过期后安装码即不可复用。
+
+网络要求：VPS 必须能访问 GitHub 和 Control Plane；Control Plane 必须能回连 VPS 的 Node Manager TCP 8088。云安全组和本机防火墙都必须允许该链路。
+
+## 7. 数据库表边界与历史清理
+
+Control Plane 当前只使用以下 5 张业务表：
 
 - `control_users`：管理端账号与 BCrypt 密码哈希。
 - `managed_nodes`：已注册的 Node Manager 节点。
+- `node_install_tokens`：一次性安装码摘要及消费状态，不保存明文安装码。
 - `remote_operations`：节点远程操作记录。
 - `residential_allocations`：生成的节点用户、连接和上游 SOCKS 分配信息。
 
@@ -214,7 +249,7 @@ cc33e47a601cbd7f4a883297049fa2b8e7bf58aa613aad3f9d44cb3c4ad87b40
 
 恢复历史表时，应先确认目标库不是正在运行的 Control Plane 生产库，再使用 MySQL 客户端导入该备份。数据库备份可能含业务数据，不得提交 Git、发送到公开渠道或放入前端静态资源。
 
-## 7. 关键实现文件
+## 8. 关键实现文件
 
 - `frontend/src/App.vue`：登录、批量输入、结果和敏感信息生命周期。
 - `frontend/src/api.js`：同源 Cookie 请求、登录/退出和批量接口。
@@ -226,3 +261,6 @@ cc33e47a601cbd7f4a883297049fa2b8e7bf58aa613aad3f9d44cb3c4ad87b40
 - `backend/.../service/ProvisioningService.java`：批量解析、逐行生成、幂等和错误脱敏。
 - `backend/.../web/ControlTokenFilter.java`：Cookie 会话与旧 Token 兼容鉴权。
 - `backend/.../web/ProvisioningController.java`：批量接口和 no-store 响应。
+- `backend/.../service/NodeInstallationService.java`：一次性安装码生成、摘要、占用、释放和消费。
+- `backend/.../web/NodeInstallationController.java`：生成 no-store 一键安装命令。
+- `backend/.../web/AgentRegistrationController.java`：长期注册令牌和一次性安装码双通道注册。

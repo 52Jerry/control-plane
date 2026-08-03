@@ -5,6 +5,7 @@ Spring Boot + Vue 多节点控制面，用于集中管理 Node Manager VPS，支
 ## 核心能力
 
 - Node Manager 安装后自动注册或按 API 地址手动注册
+- 控制中心页面生成短时一次性命令，一键安装 Node Manager 并自动注册
 - 节点心跳、在线/降级/离线判定、容量和维护模式
 - 按节点容量自动选择在线 VPS，支持指定 Node Manager
 - 自动创建 VLESS、VMess、SOCKS5，默认使用 VPS 自身出口
@@ -67,6 +68,12 @@ CONTROL_PLANE_ENCRYPTION_KEY=长随机加密密钥
 CONTROL_PLANE_LOGIN_USERNAME=admin
 CONTROL_PLANE_LOGIN_PASSWORD=管理员密码
 CONTROL_PLANE_REGISTRATION_TOKEN=长随机节点注册令牌
+```
+
+通过标准 Nginx/Caddy 反向代理并正确传递 `X-Forwarded-Proto`、`X-Forwarded-Host` 时，页面会自动识别公网地址。多层代理、内网回源或本地 IDEA 连接线上数据库时，建议额外配置：
+
+```dotenv
+CONTROL_PLANE_PUBLIC_URL=https://你的控制中心域名
 ```
 
 默认数据库名为 `control-plane`，端口为 `3306`，Control Plane 监听 `8090`，新节点容量为 `500`，会话有效期为 12 小时。通常不需要再配置这些项目。特殊环境可以使用 `CONTROL_PLANE_DB_PORT`、`CONTROL_PLANE_DB_NAME` 或完整的 `CONTROL_PLANE_DB_URL` 覆盖数据库连接。
@@ -159,15 +166,21 @@ SPRING_PROFILES_ACTIVE=prod
 
 ## Node Manager 自动注册
 
-Control Plane 启动后，在 Node Manager VPS 上只需执行下面一条命令：
+登录 Control Plane，在“全部节点”区域点击“一键安装 Node Manager”，复制命令到目标 VPS 的 root 终端执行即可。页面命令包含一个默认 10 分钟有效、仅可成功使用一次的安装码；无需查看或输入长期 `CONTROL_PLANE_REGISTRATION_TOKEN`。
+
+```bash
+bash <(curl -fsSL 'https://raw.githubusercontent.com/52Jerry/Node-Manager/main/install.sh') 'https://你的控制中心域名' 'niusu_一次性安装码'
+```
+
+公网 IP、节点 ID、节点名称、API Token 和默认容量都会自动生成或识别。安装码只在生成响应和当前浏览器内存中出现，数据库保存 SHA-256 摘要；注册成功后立即失效，节点验证失败时允许安装脚本安全重试。安装码不会写入 Node Manager 信息文件、Control Plane 日志或浏览器存储。
+
+安装脚本会复用已有 Node Manager API Token 和节点 ID，重装时更新原节点而不会生成重复记录。请确保 Control Plane 能访问该 VPS 的 TCP `8088` 端口。
+
+长期注册令牌方式仍然兼容。只传 Control Plane 地址时，脚本会在终端隐藏提示输入 `CONTROL_PLANE_REGISTRATION_TOKEN`：
 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/52Jerry/Node-Manager/main/install.sh) https://你的控制中心域名
 ```
-
-脚本随后会提示“请输入 Control Plane 节点注册令牌”。输入 `/etc/node-control-plane.env` 中相同的 `CONTROL_PLANE_REGISTRATION_TOKEN`；输入内容不会显示在屏幕上。公网 IP、节点 ID、节点名称、API Token 和默认容量都会自动生成或识别。
-
-安装脚本会复用已有 Node Manager API Token 和节点 ID，重装时更新原节点而不会生成重复记录。请确保 Control Plane 能访问该 VPS 的 TCP `8088` 端口。
 
 无人值守安装仍可使用环境变量：
 
@@ -180,6 +193,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/52Jerry/Node-Manager/main/inst
 
 | 接口 | 作用 |
 | --- | --- |
+| `POST /api/control/node-installation` | 为当前管理员生成短时一次性安装命令 |
 | `POST /api/control/agent/register` | 安装脚本注册或更新节点 |
 | `GET /api/control/nodes` | 节点列表 |
 | `PATCH /api/control/nodes/{id}` | 启用、维护和容量设置 |
@@ -208,6 +222,6 @@ cd ..\backend
 mvn test
 ```
 
-当前测试覆盖加密存储、节点注册更新、删除保护、节点选择、无代理直出请求、批量 SOCKS 两种格式、表格粘贴清理、逐行错误隔离、结果排序、远端重试、幂等冲突、账号密码会话、旧 Token 兼容、注册鉴权和敏感响应缓存策略。
+当前测试覆盖加密存储、节点注册更新、删除保护、节点选择、无代理直出请求、批量 SOCKS 两种格式、表格粘贴清理、逐行错误隔离、结果排序、远端重试、幂等冲突、账号密码会话、旧 Token 兼容、一次性安装码单次消费/失败释放/过期拒绝、注册鉴权和敏感响应缓存策略。
 
 详细实现、运维和安全边界参见 [账号登录与批量 SOCKS 节点开发文档](doc/账号登录与批量SOCKS节点开发文档.md)，后续演进参见 [后续优化清单](doc/后续优化清单.md)。
