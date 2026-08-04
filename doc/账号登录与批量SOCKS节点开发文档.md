@@ -5,7 +5,7 @@
 当前实现包含三条完整链路：
 
 1. 管理端从浏览器保存 `X-Control-Token` 改为数据库多账号登录，后端签发 HttpOnly Cookie 会话。
-2. 首页增加“节点信息输入”，批量校验上游 SOCKS 数据，并在可用 Node Manager 上生成节点用户及 VLESS、VMess、SOCKS5 连接。
+2. 首页增加“节点信息输入”，批量校验原生住宅 SOCKS 数据，并在可用 Node Manager 上固定生成 VLESS、VMess、SOCKS5 三协议入口；三种入口共同路由到该行住宅 SOCKS 出口。
 3. 页面生成短时一次性安装命令，在 VPS 上自动安装 Node Manager 并注册到当前 Control Plane。
 
 原有 VPS 直出、手动创建用户、绑定住宅出口和旧 `X-Control-Token` API 兼容能力继续保留。
@@ -75,18 +75,18 @@ CONTROL_PLANE_ENCRYPTION_KEY=replace-with-a-long-random-encryption-key
 支持每行 5 列：
 
 ```text
-IP地址 域名 端口 用户名 密码
-198.51.100.10 proxy.example.com 1080 upstream-user upstream-password
+住宅出口IP SOCKS接入地址 端口 用户名 密码
+198.51.100.10 203.0.113.10 1080 upstream-user upstream-password
 ```
 
 支持每行带序号的 6 列：
 
 ```text
-序号 IP地址 域名 端口 用户名 密码
+序号 住宅出口IP SOCKS接入地址 端口 用户名 密码
 1 198.51.100.10 proxy.example.com 1080 upstream-user upstream-password
 ```
 
-没有域名时使用 `-`：
+第二列 SOCKS 接入地址允许填写 IPv4 或域名。没有独立接入地址、需要直接连接第一列住宅 IP 时使用 `-`：
 
 ```text
 2 198.51.100.11 - 1080 upstream-user upstream-password
@@ -97,12 +97,11 @@ IP地址 域名 端口 用户名 密码
 ### 3.2 校验规则
 
 - IP：当前支持 IPv4，必须为四段十进制且每段为 0–255。
-- 域名：可填写 `-`；其他值按 IDN 转 ASCII 后校验域名标签和总长度。
+- SOCKS 接入地址：允许 IPv4 或域名；可填写 `-`，此时实际接入地址使用第一列住宅出口 IP。域名按 IDN 转 ASCII 后校验标签和总长度。
 - 端口：数字且范围为 1–65535。
 - 用户名、密码：非空、最长 255 个字符，不允许空白字符和控制字符。
 - 列数：只能是 5 列或 6 列。
-- 用户前缀：字母、数字、点、下划线、连字符，最长 32 个字符。
-- 协议：至少选择 VLESS、VMess、SOCKS 中的一种。
+- 协议：批量住宅节点固定生成 VLESS、VMess、SOCKS5 三种协议，前端不可取消，后端不信任客户端传入的协议列表并强制使用三协议。
 
 解析结果保留文本中的真实行号。某行错误只在该行返回 `error`，其他有效行继续选择 Node Manager 并开通；响应结果按原始行号排序。
 
@@ -122,14 +121,13 @@ Content-Type: application/json
 {
   "input": "批量输入原文",
   "protocols": ["vless", "vmess", "socks"],
-  "preferredNodeId": null,
-  "userPrefix": "socks"
+  "preferredNodeId": null
 }
 ```
 
-每个有效行生成稳定用户 ID 和独立远端幂等键。域名存在时 Node Manager 上游 `server` 使用域名，否则使用 IP。控制面把上游 `server`、端口、账号和密码传给 Node Manager 的创建用户接口，Node Manager 将该用户绑定到对应 SOCKS5 出口。
+每个有效行以该行 SOCKS 用户名作为节点用户 ID，并生成独立远端幂等键。第一列作为住宅出口 IP 保存和展示，第二列作为 Node Manager 实际连接的上游 SOCKS `server`；第二列为 `-` 时才使用第一列。控制面把上游 `server`、端口、账号和密码传给 Node Manager 的创建用户接口，Node Manager 为该用户创建专属 SOCKS5 outbound，并让 VLESS、VMess、SOCKS5 三种入口通过 `auth_user` 路由到同一个住宅出口。
 
-响应包含总数、成功数、失败数和逐行结果。成功行的 `allocation.connection` 可包含 VLESS、VMess、SOCKS5；失败行可没有 `allocation`，但包含脱敏后的 `error`。
+响应包含总数、成功数、失败数和逐行结果。逐行结果分别返回 `sourceIp`（住宅出口 IP）、`sourceAddress`（实际 SOCKS 接入地址）和 `sourcePort`。批量行只有在 Node Manager 返回 `proxyBound=true`、协议列表包含三协议且三种连接均非空时才计为成功；否则该行进入失败/可重试状态，不能误显示为原生住宅节点。成功卡片明确展示“原生住宅 · 三协议路由已绑定”、住宅出口 IP、SOCKS 接入、节点用户和三条连接；失败行包含脱敏后的 `error`。
 
 SOCKS5 复制格式为标准 URI：
 
@@ -188,7 +186,7 @@ cd "..\..\Node Manager"
 python -m unittest discover -s tests -v
 ```
 
-自动测试覆盖首次账号初始化、BCrypt 哈希、账号创建/停用/重置/删除、旧 Cookie 撤销、Cookie 属性、账号 API 不返回密码哈希、旧 Token 兼容、两种数据格式、WPS/Excel 空白清理、无效行隔离、结果排序、Node Manager 上游参数、AES-GCM 密文和错误脱敏。
+自动测试覆盖首次账号初始化、BCrypt 哈希、账号创建/停用/重置/删除、旧 Cookie 撤销、Cookie 属性、账号 API 不返回密码哈希、旧 Token 兼容、两种数据格式、WPS/Excel 空白清理、住宅出口 IP 与 SOCKS 接入地址分离、无效行隔离、结果排序、强制三协议、Node Manager 上游参数、住宅路由绑定响应校验、AES-GCM 密文和错误脱敏。
 
 ## 6. 一键安装 Node Manager
 
@@ -264,3 +262,63 @@ cc33e47a601cbd7f4a883297049fa2b8e7bf58aa613aad3f9d44cb3c4ad87b40
 - `backend/.../service/NodeInstallationService.java`：一次性安装码生成、摘要、占用、释放和消费。
 - `backend/.../web/NodeInstallationController.java`：生成 no-store 一键安装命令。
 - `backend/.../web/AgentRegistrationController.java`：长期注册令牌和一次性安装码双通道注册。
+# 本次页面与节点用户规则补充（2026-08-04）
+
+## 页面结构
+
+管理端侧边栏拆分为五个入口：
+
+- 总览：在线节点、自动生成数量、连接和流量指标。
+- 受管节点：查看全部 Node Manager，刷新状态、调度设置、移除节点和一键安装。
+- 自动生成记录：查看直连或上游 SOCKS 的生成状态、重试和连接。
+- 节点用户管理：按当前选中节点搜索、分页、查看连接、绑定代理、删除用户；“刷新”只重新读取当前节点用户列表。
+- 节点管理：批量 SOCKS 节点信息输入和生成链接。
+
+自动生成记录不再放在总览页，避免总览过长并减少敏感信息误展示。
+
+## 节点用户 ID 规则
+
+- 批量 SOCKS 输入时，节点用户 ID 直接使用该行的 SOCKS 用户名。
+- 用户名必须是 1-64 个字符，并且只允许字母、数字、点、下划线和短横线；非法行单独提示，不影响其他行。
+- 已取消“节点用户前缀”配置。旧客户端仍可发送该字段，但服务端会忽略它。
+- VPS 直连手动生成时仍可指定用户 ID；未指定时由服务端按请求幂等键生成 `node-<摘要>` 默认 ID。
+- Node Manager 内部仍使用 `node-manager:<userId>` 作为 VLESS/VMess 认证名称，以兼容 sing-box 配置；该内部名称不会展示为节点用户 ID。历史配置中的直接用户 ID仍可查询和删除，但新路由规则不会额外添加重复的直接 ID 别名。
+
+## 代理凭据查看
+
+自动生成记录列表只返回代理服务器和端口，不返回 SOCKS 用户名/密码。点击“上游 SOCKS”后，前端请求单条详情接口，服务端临时解密并返回账号密码；弹窗关闭、退出登录或会话失效时清理前端内存。代理密码不会进入日志、浏览器持久化存储或普通列表响应。
+
+接口链路如下：
+
+```http
+GET /api/control/nodes/{nodeId}/users/{userId}/proxy
+```
+
+Control Plane 通过节点访问令牌调用 Node Manager：
+
+```http
+GET /api/user/{userId}/proxy
+Authorization: Bearer <node-manager-token>
+```
+
+未绑定代理时响应为 `proxyBound: false`，凭据字段为空；已绑定时响应字段为：
+
+```json
+{
+  "userId": "节点用户 ID",
+  "proxyBound": true,
+  "server": "代理服务器",
+  "port": 1080,
+  "username": "按需返回",
+  "password": "按需返回"
+}
+```
+
+两个接口均设置 `Cache-Control: no-store`。批量生成记录的列表接口不会返回 `username`、`password`；详情接口才会解密返回。批量输入记录中的 `sourcePort` 表示原始 SOCKS 接入端口，`proxyPort` 表示上游代理服务器端口，二者不混用。
+
+## 后续优化计划
+
+1. 增加批量用户 ID 冲突预检和可下载的逐行错误报告。
+2. 增加节点用户管理的标签、批量删除和按出口模式过滤。
+3. 为代理详情增加短时授权确认和审计事件（只记录操作者与分配 ID，不记录密码）。
+4. 将自动生成记录改为服务端分页，降低大规模节点池的首屏响应时间。

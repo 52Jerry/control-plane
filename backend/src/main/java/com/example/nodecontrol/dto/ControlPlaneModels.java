@@ -161,9 +161,8 @@ public final class ControlPlaneModels {
     }
 
     public record ProvisionRequest(
-            @NotBlank(message = "用户 ID 不能为空")
             @Size(max = 64, message = "用户 ID 不能超过 64 个字符")
-            @Pattern(regexp = "^[A-Za-z0-9._-]+$", message = "用户 ID 只能包含字母、数字、点、下划线和短横线") String userId,
+            @Pattern(regexp = "^[A-Za-z0-9._-]*$", message = "用户 ID 只能包含字母、数字、点、下划线和短横线") String userId,
             @NotEmpty(message = "至少选择一种协议")
             List<@Pattern(regexp = "vless|vmess|socks", message = "协议只支持 VLESS、VMess 或 SOCKS") String> protocols,
             UUID preferredNodeId
@@ -173,16 +172,23 @@ public final class ControlPlaneModels {
     public record ProxyProvisionRequest(
             @NotBlank(message = "请输入 SOCKS 节点信息")
             @Size(max = 50000, message = "SOCKS 节点信息不能超过 50000 个字符") String input,
-            @NotEmpty(message = "至少选择一种协议")
-            List<@Pattern(regexp = "vless|vmess|socks", message = "协议只支持 VLESS、VMess 或 SOCKS") String> protocols,
-            UUID preferredNodeId,
-            @Size(max = 32, message = "节点用户前缀不能超过 32 个字符")
-            @Pattern(regexp = "^[A-Za-z0-9._-]*$", message = "节点用户前缀只能包含字母、数字、点、下划线和短横线") String userPrefix
+            List<String> protocols,
+            UUID preferredNodeId
     ) {
+        /**
+         * Compatibility constructor for clients compiled against the previous
+         * prefix-based request contract. The prefix is intentionally ignored.
+         */
+        public ProxyProvisionRequest(String input, List<String> protocols,
+                                      UUID preferredNodeId, String ignoredUserPrefix) {
+            this(input, protocols, preferredNodeId);
+        }
     }
 
     public record ProxyProvisionResult(
             int rowNumber,
+            String sourceIp,
+            String sourceDomain,
             String sourceAddress,
             Integer sourcePort,
             AllocationView allocation,
@@ -215,7 +221,12 @@ public final class ControlPlaneModels {
             String provisioningMode,
             boolean proxyBound,
             String proxyServer,
-            Integer proxyPort
+            Integer proxyPort,
+            String proxyUsername,
+            String proxyPassword,
+            String sourceIp,
+            String sourceAddress,
+            Integer sourcePort
     ) {
         public AllocationView(UUID id,
                               String requestKey,
@@ -232,7 +243,29 @@ public final class ControlPlaneModels {
                               Instant completedAt) {
             this(id, requestKey, userId, protocols, state, nodeId, nodeName, nodeHost,
                     connection, lastError, createdAt, updatedAt, completedAt,
-                    "DIRECT", false, null, null);
+                    "DIRECT", false, null, null, null, null, null, null, null);
+        }
+
+        public AllocationView(UUID id,
+                              String requestKey,
+                              String userId,
+                              List<String> protocols,
+                              String state,
+                              UUID nodeId,
+                              String nodeName,
+                              String nodeHost,
+                              UserConnection connection,
+                              String lastError,
+                              Instant createdAt,
+                              Instant updatedAt,
+                              Instant completedAt,
+                              String provisioningMode,
+                              boolean proxyBound,
+                              String proxyServer,
+                              Integer proxyPort) {
+            this(id, requestKey, userId, protocols, state, nodeId, nodeName, nodeHost,
+                    connection, lastError, createdAt, updatedAt, completedAt,
+                    provisioningMode, proxyBound, proxyServer, proxyPort, null, null, null, null, null);
         }
     }
 }

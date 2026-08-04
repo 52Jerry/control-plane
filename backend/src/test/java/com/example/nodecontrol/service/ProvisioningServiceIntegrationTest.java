@@ -161,7 +161,7 @@ class ProvisioningServiceIntegrationTest {
         saveOnlineNode("node-a", 10);
         when(nodeManagerClient.createUser(any(), any(), any())).thenAnswer(invocation -> {
             CreateUserRequest request = invocation.getArgument(1);
-            return successResponse(request.userId());
+            return residentialSuccessResponse(request.userId());
         });
         String input = "\uFEFF198.51.100.10\u00A0edge-a.example\t1080\tuser-a\tsecret-a\n"
                 + "2\u3000198.51.100.11\u3000-\u30001081\u3000user-b\u3000secret-b";
@@ -174,6 +174,8 @@ class ProvisioningServiceIntegrationTest {
         assertThat(response.succeeded()).isEqualTo(2);
         assertThat(response.failed()).isZero();
         assertThat(response.results()).extracting(result -> result.rowNumber()).containsExactly(1, 2);
+        assertThat(response.results()).extracting(result -> result.sourceIp())
+                .containsExactly("198.51.100.10", "198.51.100.11");
         assertThat(response.results()).extracting(result -> result.sourceAddress())
                 .containsExactly("edge-a.example", "198.51.100.11");
 
@@ -183,8 +185,12 @@ class ProvisioningServiceIntegrationTest {
         assertThat(requestCaptor.getAllValues().get(0).proxy().port()).isEqualTo(1080);
         assertThat(requestCaptor.getAllValues().get(0).proxy().username()).isEqualTo("user-a");
         assertThat(requestCaptor.getAllValues().get(0).proxy().password()).isEqualTo("secret-a");
+        assertThat(requestCaptor.getAllValues().get(0).userId()).isEqualTo("user-a");
+        assertThat(requestCaptor.getAllValues().get(0).protocols())
+                .containsExactly("vless", "vmess", "socks");
         assertThat(requestCaptor.getAllValues().get(1).proxy().server()).isEqualTo("198.51.100.11");
         assertThat(requestCaptor.getAllValues().get(1).proxy().port()).isEqualTo(1081);
+        assertThat(requestCaptor.getAllValues().get(1).userId()).isEqualTo("user-b");
 
         List<ResidentialAllocation> stored = allocationRepository.findAll();
         assertThat(stored).hasSize(2).allSatisfy(allocation -> {
@@ -200,7 +206,7 @@ class ProvisioningServiceIntegrationTest {
         saveOnlineNode("node-a", 10);
         when(nodeManagerClient.createUser(any(), any(), any())).thenAnswer(invocation -> {
             CreateUserRequest request = invocation.getArgument(1);
-            return successResponse(request.userId());
+            return residentialSuccessResponse(request.userId());
         });
         String input = "198.51.100.10 edge-a.example 1080 user-a secret-a\n"
                 + "999.51.100.10 broken.example 70000 invalid-user invalid-secret\n"
@@ -223,6 +229,74 @@ class ProvisioningServiceIntegrationTest {
     }
 
     @Test
+    void proxyBatchCreatesThreeProtocolResidentialRouteFromExitIpAndSocksEntryAddress() {
+        saveOnlineNode("node-a", 10);
+        when(nodeManagerClient.createUser(any(), any(), any())).thenAnswer(invocation -> {
+            CreateUserRequest request = invocation.getArgument(1);
+            return residentialSuccessResponse(request.userId());
+        });
+
+        var response = provisioningService.provisionProxyBatch(
+                "batch-residential-route",
+                new ProxyProvisionRequest(
+                        "38.30.216.149\t198.13.46.231\t5001\ttest-user\ttest-password",
+                        List.of("socks"), null, "residential"));
+
+        assertThat(response.succeeded()).isEqualTo(1);
+        assertThat(response.failed()).isZero();
+        var result = response.results().getFirst();
+        assertThat(result.sourceIp()).isEqualTo("38.30.216.149");
+        assertThat(result.sourceDomain()).isEqualTo("198.13.46.231");
+        assertThat(result.sourceAddress()).isEqualTo("198.13.46.231");
+        assertThat(result.sourcePort()).isEqualTo(5001);
+        assertThat(result.error()).isNull();
+        assertThat(result.allocation().protocols()).containsExactly("vless", "vmess", "socks");
+        assertThat(result.allocation().proxyBound()).isTrue();
+        assertThat(result.allocation().connection().proxyBound()).isTrue();
+        assertThat(result.allocation().connection().vless()).startsWith("vless://");
+        assertThat(result.allocation().connection().vmess()).startsWith("vmess://");
+        assertThat(result.allocation().connection().socks()).isNotNull();
+        assertThat(result.allocation().proxyUsername()).isNull();
+        assertThat(result.allocation().proxyPassword()).isNull();
+
+        ArgumentCaptor<CreateUserRequest> requestCaptor = ArgumentCaptor.forClass(CreateUserRequest.class);
+        verify(nodeManagerClient).createUser(any(), requestCaptor.capture(), any());
+        CreateUserRequest remoteRequest = requestCaptor.getValue();
+        assertThat(remoteRequest.protocols()).containsExactly("vless", "vmess", "socks");
+        assertThat(remoteRequest.proxy().server()).isEqualTo("198.13.46.231");
+        assertThat(remoteRequest.proxy().port()).isEqualTo(5001);
+
+        ResidentialAllocation stored = allocationRepository.findAll().getFirst();
+        assertThat(stored.getProxySourceIp()).isEqualTo("38.30.216.149");
+        assertThat(stored.getProxySourceDomain()).isEqualTo("198.13.46.231");
+        assertThat(stored.getProxyServer()).isEqualTo("198.13.46.231");
+        assertThat(stored.getProxyPasswordCipher())
+                .startsWith("enc:v1:")
+                .doesNotContain("test-password");
+    }
+
+    @Test
+    void proxyBatchRejectsAResponseThatIsNotBoundToAllThreeProtocols() {
+        saveOnlineNode("node-a", 10);
+        when(nodeManagerClient.createUser(any(), any(), any()))
+                .thenReturn(successResponse("incomplete-residential"));
+
+        var response = provisioningService.provisionProxyBatch(
+                "batch-incomplete-residential",
+                new ProxyProvisionRequest(
+                        "198.51.100.20 203.0.113.20 1080 test-user test-password",
+                        List.of("socks"), null, "incomplete"));
+
+        assertThat(response.succeeded()).isZero();
+        assertThat(response.failed()).isEqualTo(1);
+        assertThat(response.results().getFirst().error())
+                .contains("原生住宅出口")
+                .doesNotContain("test-user")
+                .doesNotContain("test-password");
+        assertThat(allocationRepository.findAll().getFirst().getState()).isEqualTo("RETRYABLE");
+    }
+
+    @Test
     void proxyBatchReportsInvalidDomainPortAndColumnCountWithoutCallingNodeManager() {
         String input = "198.51.100.10 bad_domain 1080 user-a secret-a\n"
                 + "198.51.100.11 example.com not-a-port user-b secret-b\n"
@@ -238,10 +312,21 @@ class ProvisioningServiceIntegrationTest {
         assertThat(response.results()).extracting(result -> result.rowNumber()).containsExactly(1, 2, 3);
         assertThat(response.results()).extracting(result -> result.error())
                 .allSatisfy(message -> assertThat(message).contains("第 "));
-        assertThat(response.results().get(0).error()).contains("域名格式不正确");
+        assertThat(response.results().get(0).error()).contains("SOCKS 接入地址格式不正确");
         assertThat(response.results().get(1).error()).contains("端口不是有效数字");
         assertThat(response.results().get(2).error()).contains("5 列或带序号的 6 列");
         verify(nodeManagerClient, never()).createUser(any(), any(), any());
+    }
+
+    @Test
+    void directProvisionUsesDeterministicDefaultWhenUserIdIsMissing() {
+        saveOnlineNode("node-default", 10);
+        when(nodeManagerClient.createUser(any(), any(), any())).thenReturn(successResponse("node-default-user"));
+
+        var result = provisioningService.provision("default-user-request", new ProvisionRequest(
+                "", List.of("socks"), null));
+
+        assertThat(result.userId()).startsWith("node-").hasSize(21);
     }
 
     @Test
@@ -317,5 +402,17 @@ class ProvisioningServiceIntegrationTest {
                 "vmess://generated",
                 new SocksConnection("203.0.113.10", 5001, userId, "local-password"),
                 false);
+    }
+
+    private CreateUserResponse residentialSuccessResponse(String userId) {
+        return new CreateUserResponse(
+                true,
+                userId,
+                UUID.randomUUID().toString(),
+                List.of("vless", "vmess", "socks"),
+                "vless://generated",
+                "vmess://generated",
+                new SocksConnection("203.0.113.10", 5001, userId, "local-password"),
+                true);
     }
 }

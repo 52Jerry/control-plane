@@ -54,6 +54,8 @@ public class ResidentialAllocation {
     @Column(length = 255)
     private String proxySourceDomain;
 
+    private Integer proxySourcePort;
+
     @Column(length = 255)
     private String proxyServer;
 
@@ -115,7 +117,7 @@ public class ResidentialAllocation {
                                  String remoteIdempotencyKey,
                                  String protocols) {
         this(requestKey, requestHash, controlUserId, remoteIdempotencyKey, protocols,
-                "DIRECT", null, null, null, null, null, null, null);
+                "DIRECT", null, null, null, null, null, null, null, null);
     }
 
     public ResidentialAllocation(String requestKey,
@@ -127,6 +129,7 @@ public class ResidentialAllocation {
                                  Integer sourceRowNumber,
                                  String proxySourceIp,
                                  String proxySourceDomain,
+                                 Integer proxySourcePort,
                                  String proxyServer,
                                  Integer proxyPort,
                                  String proxyUsernameCipher,
@@ -141,6 +144,7 @@ public class ResidentialAllocation {
         this.sourceRowNumber = sourceRowNumber;
         this.proxySourceIp = proxySourceIp;
         this.proxySourceDomain = proxySourceDomain;
+        this.proxySourcePort = proxySourcePort;
         this.proxyServer = proxyServer;
         this.proxyPort = proxyPort;
         this.proxyUsernameCipher = proxyUsernameCipher;
@@ -247,6 +251,10 @@ public class ResidentialAllocation {
 
     public String getProxySourceDomain() {
         return proxySourceDomain;
+    }
+
+    public Integer getProxySourcePort() {
+        return proxySourcePort;
     }
 
     public String getProxyServer() {

@@ -7,6 +7,7 @@ import com.example.nodecontrol.dto.RemoteModels.BindProxyRequest;
 import com.example.nodecontrol.dto.RemoteModels.CreateUserRequest;
 import com.example.nodecontrol.dto.RemoteModels.CreateUserResponse;
 import com.example.nodecontrol.dto.RemoteModels.OperationResponse;
+import com.example.nodecontrol.dto.RemoteModels.ProxyDetails;
 import com.example.nodecontrol.dto.RemoteModels.ReloadResponse;
 import com.example.nodecontrol.dto.RemoteModels.TrafficResponse;
 import com.example.nodecontrol.dto.RemoteModels.UserConnection;
@@ -91,6 +92,14 @@ public class NodeManagerClient {
                 .retrieve()
                 .onStatus(HttpStatusCode::isError, this::handleError)
                 .body(TrafficResponse.class));
+    }
+
+    public ProxyDetails getProxy(ManagedNode node, String userId) {
+        return execute(() -> client(node).get()
+                .uri("/api/user/{userId}/proxy", userId)
+                .retrieve()
+                .onStatus(HttpStatusCode::isError, this::handleError)
+                .body(ProxyDetails.class));
     }
 
     public OperationResponse bindProxy(ManagedNode node, BindProxyRequest request, String idempotencyKey) {

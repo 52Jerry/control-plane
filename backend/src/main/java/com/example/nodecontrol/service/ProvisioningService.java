@@ -47,6 +47,7 @@ import java.net.UnknownHostException;
 public class ProvisioningService {
 
     private static final Collection<String> CAPACITY_STATES = List.of("PROVISIONING", "RETRYABLE", "ACTIVE");
+    private static final List<String> RESIDENTIAL_PROTOCOLS = List.of("vless", "vmess", "socks");
 
     private final ResidentialAllocationRepository allocationRepository;
     private final ManagedNodeRepository nodeRepository;
@@ -75,42 +76,41 @@ public class ProvisioningService {
     public AllocationView provision(String idempotencyKey, ProvisionRequest request) {
         String requestKey = normalizeRequestKey(idempotencyKey);
         validateProtocols(request.protocols());
-        String requestHash = hash(request);
-        ResidentialAllocation allocation = createOrLoad(requestKey, requestHash, request);
-        return executeProvisioning(allocation, request, null);
+        ProvisionRequest effectiveRequest = withEffectiveUserId(request, requestKey);
+        String requestHash = hash(effectiveRequest);
+        ResidentialAllocation allocation = createOrLoad(requestKey, requestHash, effectiveRequest);
+        return executeProvisioning(allocation, effectiveRequest, null);
     }
 
     public ProxyProvisionBatchResponse provisionProxyBatch(String idempotencyKey,
                                                            ProxyProvisionRequest request) {
         String batchKey = normalizeRequestKey(idempotencyKey);
-        validateProtocols(request.protocols());
         List<ProxyRowParseResult> parsedRows = parseProxyRows(request.input());
-        String prefix = normalizeUserPrefix(request.userPrefix());
-
         List<PreparedProxyRow> preparedRows = new ArrayList<>();
         List<ProxyProvisionResult> results = new ArrayList<>();
         for (ProxyRowParseResult parsed : parsedRows) {
             if (parsed.error() != null) {
                 results.add(new ProxyProvisionResult(
-                        parsed.rowNumber(), parsed.sourceAddress(), parsed.sourcePort(), null, parsed.error()));
+                        parsed.rowNumber(), parsed.sourceIp(), parsed.sourceDomain(),
+                        parsed.sourceAddress(), parsed.sourcePort(), null, parsed.error()));
                 continue;
             }
             ParsedProxyRow row = parsed.row();
             try {
-                String userId = deterministicUserId(prefix, batchKey, row.rowNumber());
+                String userId = normalizeBatchUserId(row.username(), batchKey, row.rowNumber());
                 String rowKey = rowRequestKey(batchKey, row.rowNumber());
                 ProxyConfig proxy = new ProxyConfig(
                         "socks5", row.server(), row.port(), row.username(), row.password());
                 ProvisionRequest provisionRequest = new ProvisionRequest(
-                        userId, request.protocols(), request.preferredNodeId());
+                        userId, RESIDENTIAL_PROTOCOLS, request.preferredNodeId());
                 ProxyRequestHash hashInput = new ProxyRequestHash(
-                        provisionRequest, row.sourceIp(), row.sourceDomain(), proxy);
+                        provisionRequest, row.sourceIp(), row.sourceAddress(), proxy);
                 ResidentialAllocation allocation = createOrLoadProxy(
                         rowKey, hash(hashInput), provisionRequest, row, proxy);
                 preparedRows.add(new PreparedProxyRow(row, provisionRequest, proxy, allocation));
             } catch (RuntimeException exception) {
                 results.add(new ProxyProvisionResult(
-                        row.rowNumber(), row.server(), row.port(), null,
+                        row.rowNumber(), row.sourceIp(), row.sourceAddress(), row.server(), row.port(), null,
                         sanitizeError(exception.getMessage(), null)));
             }
         }
@@ -119,18 +119,17 @@ public class ProvisioningService {
             try {
                 AllocationView allocation = executeProvisioning(
                         prepared.allocation(), prepared.request(), prepared.proxy());
-                results.add(toProxyResult(prepared.row(), allocation, null));
+                results.add(toProxyResult(prepared.row(), withoutProxyCredentials(allocation), null));
             } catch (RuntimeException exception) {
                 ResidentialAllocation failed = allocationRepository.findById(prepared.allocation().getId())
                         .orElse(prepared.allocation());
                 String error = sanitizeError(exception.getMessage(), prepared.proxy());
-                results.add(toProxyResult(prepared.row(), toView(failed), error));
+                results.add(toProxyResult(prepared.row(), toViewWithoutProxyCredentials(failed), error));
             }
         }
         results.sort(Comparator.comparingInt(ProxyProvisionResult::rowNumber));
         int succeeded = (int) results.stream()
-                .filter(result -> result.allocation() != null
-                        && "ACTIVE".equals(result.allocation().state()))
+                .filter(this::isSuccessfulResidentialResult)
                 .count();
         return new ProxyProvisionBatchResponse(
                 results.size(), succeeded, results.size() - succeeded, results);
@@ -162,6 +161,9 @@ public class ProvisioningService {
                                                 ProxyConfig proxy) {
         PreparedProvisioning prepared = prepare(allocation.getId(), request);
         if (prepared.activeView() != null) {
+            if (proxy != null) {
+                validateResidentialAllocation(prepared.activeView());
+            }
             return prepared.activeView();
         }
         CreateUserRequest remoteRequest = new CreateUserRequest(
@@ -175,6 +177,9 @@ public class ProvisioningService {
         try {
             CreateUserResponse response = client.createUser(
                     prepared.node(), remoteRequest, prepared.remoteIdempotencyKey());
+            if (proxy != null) {
+                validateResidentialResponse(response);
+            }
             return complete(prepared.allocationId(), response);
         } catch (RemoteNodeException exception) {
             if (exception.getStatusCode() == 409) {
@@ -183,6 +188,9 @@ public class ProvisioningService {
                     CreateUserResponse recovered = new CreateUserResponse(
                             existing.success(), existing.userId(), existing.uuid(), existing.protocols(),
                             existing.vless(), existing.vmess(), existing.socks(), existing.proxyBound());
+                    if (proxy != null) {
+                        validateResidentialResponse(recovered);
+                    }
                     return complete(prepared.allocationId(), recovered);
                 } catch (RuntimeException ignored) {
                     // The original conflict is more useful than a failed reconciliation lookup.
@@ -266,7 +274,8 @@ public class ProvisioningService {
                     "UPSTREAM_SOCKS",
                     row.rowNumber(),
                     row.sourceIp(),
-                    row.sourceDomain(),
+                    row.sourceAddress(),
+                    row.port(),
                     proxy.server(),
                     proxy.port(),
                     secretCipher.encrypt(proxy.username()),
@@ -388,6 +397,12 @@ public class ProvisioningService {
     private AllocationView toView(ResidentialAllocation allocation, boolean includeConnection) {
         ManagedNode node = allocation.getNode();
         UserConnection connection = null;
+        String proxyUsername = null;
+        String proxyPassword = null;
+        if (includeConnection && "UPSTREAM_SOCKS".equals(allocation.getProvisioningMode())) {
+            proxyUsername = secretCipher.decrypt(allocation.getProxyUsernameCipher());
+            proxyPassword = secretCipher.decrypt(allocation.getProxyPasswordCipher());
+        }
         if (includeConnection && "ACTIVE".equals(allocation.getState())) {
             SocksConnection socks = allocation.getSocksHost() == null ? null : new SocksConnection(
                     allocation.getSocksHost(),
@@ -422,7 +437,12 @@ public class ProvisioningService {
                 allocation.getProvisioningMode(),
                 allocation.isProxyBound(),
                 allocation.getProxyServer(),
-                allocation.getProxyPort());
+                allocation.getProxyPort(),
+                proxyUsername,
+                proxyPassword,
+                allocation.getProxySourceIp(),
+                allocation.getProxySourceDomain(),
+                allocation.getProxySourcePort());
     }
 
     private List<ProxyRowParseResult> parseProxyRows(String input) {
@@ -441,8 +461,10 @@ public class ProvisioningService {
             }
             int rowNumber = lineIndex + 1;
             String[] columns = line.split("\\s+");
-            String sourceAddress = columns.length == 0 ? null
-                    : columns.length == 6 ? columns[1] : columns[0];
+            String sourceIp = candidateColumn(columns, columns.length == 6 ? 1 : 0);
+            String sourceDomain = normalizeSourceAddressCandidate(
+                    candidateColumn(columns, columns.length == 6 ? 2 : 1));
+            String sourceAddress = sourceDomain == null ? sourceIp : sourceDomain;
             Integer sourcePort = findPort(columns);
             try {
                 ParsedProxyRow row = switch (columns.length) {
@@ -452,10 +474,11 @@ public class ProvisioningService {
                             "第 " + rowNumber + " 行格式错误，应为 5 列或带序号的 6 列");
                 };
                 rows.add(new ProxyRowParseResult(
-                        rowNumber, row.server(), row.port(), row, null));
+                        rowNumber, row.sourceIp(), row.sourceAddress(), row.server(), row.port(), row, null));
             } catch (IllegalArgumentException exception) {
                 rows.add(new ProxyRowParseResult(
-                        rowNumber, sourceAddress, sourcePort, null, exception.getMessage()));
+                        rowNumber, sourceIp, sourceDomain, sourceAddress,
+                        sourcePort, null, exception.getMessage()));
             }
         }
         if (rows.isEmpty()) {
@@ -474,11 +497,11 @@ public class ProvisioningService {
                                      String username,
                                      String password) {
         String ip = requireColumn(sourceIp, rowNumber, "IP");
-        String domain = sourceDomain == null || sourceDomain.isBlank() || "-".equals(sourceDomain)
+        String sourceAddress = sourceDomain == null || sourceDomain.isBlank() || "-".equals(sourceDomain)
                 ? null : sourceDomain.trim();
         validateIp(ip, rowNumber);
-        if (domain != null) {
-            validateDomain(domain, rowNumber);
+        if (sourceAddress != null) {
+            validateSourceAddress(sourceAddress, rowNumber);
         }
         int port;
         try {
@@ -494,8 +517,16 @@ public class ProvisioningService {
         validateCredential(normalizedUsername, rowNumber, "账号");
         validateCredential(normalizedPassword, rowNumber, "密码");
         return new ParsedProxyRow(
-                rowNumber, ip, domain, domain == null ? ip : domain, port,
+                rowNumber, ip, sourceAddress, sourceAddress == null ? ip : sourceAddress, port,
                 normalizedUsername, normalizedPassword);
+    }
+
+    private String candidateColumn(String[] columns, int index) {
+        return index >= 0 && index < columns.length ? columns[index] : null;
+    }
+
+    private String normalizeSourceAddressCandidate(String value) {
+        return value == null || value.isBlank() || "-".equals(value) ? null : value;
     }
 
     private Integer findPort(String[] columns) {
@@ -541,6 +572,18 @@ public class ProvisioningService {
         }
     }
 
+    private void validateSourceAddress(String value, int rowNumber) {
+        if (value.matches("^\\d{1,3}(?:\\.\\d{1,3}){3}$")) {
+            validateIp(value, rowNumber);
+            return;
+        }
+        try {
+            validateDomain(value, rowNumber);
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException("第 " + rowNumber + " 行 SOCKS 接入地址格式不正确");
+        }
+    }
+
     private void validateCredential(String value, int rowNumber, String name) {
         if (value.chars().anyMatch(Character::isWhitespace)) {
             throw new IllegalArgumentException("第 " + rowNumber + " 行" + name + "不能包含空白字符");
@@ -561,18 +604,36 @@ public class ProvisioningService {
         return normalized;
     }
 
-    private String normalizeUserPrefix(String userPrefix) {
-        String normalized = userPrefix == null || userPrefix.isBlank()
-                ? "socks" : userPrefix.trim().toLowerCase(Locale.ROOT);
-        if (!normalized.matches("[a-z0-9._-]+")) {
-            throw new IllegalArgumentException("用户前缀只能包含字母、数字、点、下划线和连字符");
+    private ProvisionRequest withEffectiveUserId(ProvisionRequest request, String requestKey) {
+        String userId = request.userId();
+        if (userId == null || userId.isBlank()) {
+            userId = defaultUserId(requestKey);
+        } else {
+            userId = normalizeNodeUserId(userId, "用户 ID");
+        }
+        return new ProvisionRequest(userId, request.protocols(), request.preferredNodeId());
+    }
+
+    private String normalizeBatchUserId(String username, String batchKey, int rowNumber) {
+        if (username == null || username.isBlank()) {
+            return String.format(Locale.ROOT, "node-%s-%02d", sha256Hex(batchKey).substring(0, 12), rowNumber);
+        }
+        return normalizeNodeUserId(username, "第 " + rowNumber + " 行 SOCKS 用户名");
+    }
+
+    private String normalizeNodeUserId(String value, String label) {
+        String normalized = value == null ? "" : value.trim();
+        if (normalized.isBlank()) {
+            throw new IllegalArgumentException(label + "不能为空");
+        }
+        if (normalized.length() > 64 || !normalized.matches("[A-Za-z0-9._-]+")) {
+            throw new IllegalArgumentException(label + "只能包含字母、数字、点、下划线和短横线，且不超过 64 个字符");
         }
         return normalized;
     }
 
-    private String deterministicUserId(String prefix, String batchKey, int rowNumber) {
-        String digest = sha256Hex(batchKey).substring(0, 12);
-        return String.format(Locale.ROOT, "%s-%s-%02d", prefix, digest, rowNumber);
+    private String defaultUserId(String requestKey) {
+        return "node-" + sha256Hex(requestKey).substring(0, 16);
     }
 
     private String rowRequestKey(String batchKey, int rowNumber) {
@@ -602,7 +663,107 @@ public class ProvisioningService {
                                                AllocationView allocation,
                                                String error) {
         return new ProxyProvisionResult(
-                row.rowNumber(), row.server(), row.port(), allocation, error);
+                row.rowNumber(), row.sourceIp(), row.sourceAddress(),
+                row.server(), row.port(), allocation, error);
+    }
+
+    /**
+     * Batch responses are not the explicit proxy-details endpoint. Keep the
+     * generated connection links available for the current page, but never
+     * include the upstream SOCKS username/password in this response.
+     */
+    private AllocationView toViewWithoutProxyCredentials(ResidentialAllocation allocation) {
+        AllocationView view = toView(allocation, true);
+        return withoutProxyCredentials(view);
+    }
+
+    private AllocationView withoutProxyCredentials(AllocationView view) {
+        if (view == null || (view.proxyUsername() == null && view.proxyPassword() == null)) {
+            return view;
+        }
+        return new AllocationView(
+                view.id(),
+                view.requestKey(),
+                view.userId(),
+                view.protocols(),
+                view.state(),
+                view.nodeId(),
+                view.nodeName(),
+                view.nodeHost(),
+                view.connection(),
+                view.lastError(),
+                view.createdAt(),
+                view.updatedAt(),
+                view.completedAt(),
+                view.provisioningMode(),
+                view.proxyBound(),
+                view.proxyServer(),
+                view.proxyPort(),
+                null,
+                null,
+                view.sourceIp(),
+                view.sourceAddress(),
+                view.sourcePort());
+    }
+
+    private boolean isSuccessfulResidentialResult(ProxyProvisionResult result) {
+        return result.error() == null && isResidentialAllocationComplete(result.allocation());
+    }
+
+    private void validateResidentialResponse(CreateUserResponse response) {
+        if (response == null
+                || !response.success()
+                || !hasResidentialProtocols(response.protocols())
+                || !hasText(response.vless())
+                || !hasText(response.vmess())
+                || !hasUsableSocksConnection(response.socks())
+                || !response.proxyBound()) {
+            throw new IllegalStateException("节点管理器未返回已绑定原生住宅出口的 VLESS、VMess、SOCKS5 三协议连接");
+        }
+    }
+
+    private void validateResidentialAllocation(AllocationView allocation) {
+        if (!isResidentialAllocationComplete(allocation)) {
+            throw new IllegalStateException("原生住宅节点记录缺少已绑定出口的 VLESS、VMess、SOCKS5 三协议连接");
+        }
+    }
+
+    private boolean isResidentialAllocationComplete(AllocationView allocation) {
+        if (allocation == null || !"ACTIVE".equals(allocation.state()) || !allocation.proxyBound()) {
+            return false;
+        }
+        UserConnection connection = allocation.connection();
+        return connection != null
+                && connection.success()
+                && connection.proxyBound()
+                && hasResidentialProtocols(connection.protocols())
+                && hasText(connection.vless())
+                && hasText(connection.vmess())
+                && hasUsableSocksConnection(connection.socks());
+    }
+
+    private boolean hasResidentialProtocols(List<String> protocols) {
+        if (protocols == null) {
+            return false;
+        }
+        return protocols.stream()
+                .filter(value -> value != null)
+                .map(value -> value.toLowerCase(Locale.ROOT))
+                .collect(java.util.stream.Collectors.toSet())
+                .containsAll(RESIDENTIAL_PROTOCOLS);
+    }
+
+    private boolean hasUsableSocksConnection(SocksConnection socks) {
+        return socks != null
+                && hasText(socks.host())
+                && socks.port() >= 1
+                && socks.port() <= 65535
+                && hasText(socks.username())
+                && hasText(socks.password());
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private String sanitizeError(String message, ProxyConfig proxy) {
@@ -686,7 +847,7 @@ public class ProvisioningService {
     private record ParsedProxyRow(
             int rowNumber,
             String sourceIp,
-            String sourceDomain,
+            String sourceAddress,
             String server,
             int port,
             String username,
@@ -696,6 +857,8 @@ public class ProvisioningService {
 
     private record ProxyRowParseResult(
             int rowNumber,
+            String sourceIp,
+            String sourceDomain,
             String sourceAddress,
             Integer sourcePort,
             ParsedProxyRow row,
@@ -714,7 +877,7 @@ public class ProvisioningService {
     private record ProxyRequestHash(
             ProvisionRequest provision,
             String sourceIp,
-            String sourceDomain,
+            String sourceAddress,
             ProxyConfig proxy
     ) {
     }

@@ -6,6 +6,7 @@ import com.example.nodecontrol.dto.RemoteModels.BindProxyRequest;
 import com.example.nodecontrol.dto.RemoteModels.CreateUserRequest;
 import com.example.nodecontrol.dto.RemoteModels.CreateUserResponse;
 import com.example.nodecontrol.dto.RemoteModels.OperationResponse;
+import com.example.nodecontrol.dto.RemoteModels.ProxyDetails;
 import com.example.nodecontrol.dto.RemoteModels.ReloadResponse;
 import com.example.nodecontrol.dto.RemoteModels.TrafficResponse;
 import com.example.nodecontrol.dto.RemoteModels.UserConnection;
@@ -47,6 +48,10 @@ public class NodeUserService {
 
     public TrafficResponse getTraffic(UUID nodeId, String userId) {
         return client.getTraffic(nodeService.getNode(nodeId), userId);
+    }
+
+    public ProxyDetails getProxy(UUID nodeId, String userId) {
+        return client.getProxy(nodeService.getNode(nodeId), userId);
     }
 
     public OperationResponse bindProxy(UUID nodeId, BindProxyRequest request, String idempotencyKey) {

@@ -63,6 +63,7 @@ export const api = {
     method: 'POST', headers: operationHeaders('manual-create'), body: JSON.stringify(payload),
   }),
   connections: (nodeId, userId) => request(`/api/control/nodes/${nodeId}/users/${encodeURIComponent(userId)}/connections`),
+  proxy: (nodeId, userId) => request(`/api/control/nodes/${nodeId}/users/${encodeURIComponent(userId)}/proxy`),
   traffic: (nodeId, userId) => request(`/api/control/nodes/${nodeId}/users/${encodeURIComponent(userId)}/traffic`),
   bindProxy: (nodeId, payload) => request(`/api/control/nodes/${nodeId}/users/bind-proxy`, {
     method: 'POST', headers: operationHeaders('manual-bind'), body: JSON.stringify(payload),

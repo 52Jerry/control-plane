@@ -4,6 +4,7 @@ import com.example.nodecontrol.dto.RemoteModels.BindProxyRequest;
 import com.example.nodecontrol.dto.RemoteModels.CreateUserRequest;
 import com.example.nodecontrol.dto.RemoteModels.CreateUserResponse;
 import com.example.nodecontrol.dto.RemoteModels.OperationResponse;
+import com.example.nodecontrol.dto.RemoteModels.ProxyDetails;
 import com.example.nodecontrol.dto.RemoteModels.TrafficResponse;
 import com.example.nodecontrol.dto.RemoteModels.UserConnection;
 import com.example.nodecontrol.dto.RemoteModels.UserPage;
@@ -55,6 +56,11 @@ public class UserController {
     @GetMapping("/users/{userId}/connections")
     public ResponseEntity<UserConnection> connections(@PathVariable UUID nodeId, @PathVariable String userId) {
         return noStore(userService.getConnections(nodeId, userId));
+    }
+
+    @GetMapping("/users/{userId}/proxy")
+    public ResponseEntity<ProxyDetails> proxy(@PathVariable UUID nodeId, @PathVariable String userId) {
+        return noStore(userService.getProxy(nodeId, userId));
     }
 
     @GetMapping("/users/{userId}/traffic")

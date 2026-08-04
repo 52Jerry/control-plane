@@ -14,10 +14,11 @@ const users = ref([])
 const userLoadError = ref('')
 const allocations = ref([])
 const controlAccounts = ref([])
+const activeView = ref('overview')
 const userPage = reactive({ page: 1, pageSize: 20, total: 0, keyword: '' })
 const selectedNodeId = ref(localStorage.getItem('selected-node-id') || '')
 const loading = reactive({ app: true, nodes: false, users: false, allocations: false, action: false })
-const modal = reactive({ login: false, accounts: false, node: false, installation: false, user: false, provision: false, connection: false, proxy: false, settings: false })
+const modal = reactive({ login: false, accounts: false, node: false, installation: false, user: false, provision: false, connection: false, proxy: false, proxyDetails: false, settings: false })
 const toast = reactive({ visible: false, type: 'success', message: '' })
 const loginForm = reactive({ username: '', password: '' })
 const accountForm = reactive({ username: '', password: '' })
@@ -28,10 +29,10 @@ const connectionData = ref(null)
 const connectionUser = ref('')
 const connectionContext = ref(null)
 const revealConnectionSecrets = ref(false)
+const proxyCredentialData = ref(null)
+const revealProxyCredentials = ref(false)
 const proxyBatchForm = reactive({
   input: '',
-  userPrefix: 'socks',
-  protocols: ['vless', 'vmess', 'socks'],
   preferredNodeId: '',
 })
 const proxyBatchResults = ref([])
@@ -63,7 +64,13 @@ const proxyForm = reactive({ userId: '', server: '', port: 1080, username: '', p
 
 const selectedNode = computed(() => nodes.value.find((node) => node.id === selectedNodeId.value) || null)
 const totalPages = computed(() => Math.max(1, Math.ceil(userPage.total / userPage.pageSize)))
-const pageTitle = computed(() => selectedNode.value ? selectedNode.value.name : '节点控制中心')
+const pageTitle = computed(() => ({
+  overview: '总览',
+  nodes: '受管节点',
+  allocations: '自动生成记录',
+  users: selectedNode.value ? `${selectedNode.value.name} · 节点用户` : '节点用户管理',
+  'node-management': '节点管理',
+}[activeView.value] || '节点控制中心'))
 const allocatableNodes = computed(() => nodes.value.filter((node) => node.enabled && !node.maintenance && ['online', 'degraded'].includes(node.status) && node.userCount < node.maxUsers))
 const batchConnectionCount = computed(() => proxyBatchResults.value.reduce(
   (total, result) => total + connectionLinks(result.allocation?.connection).length,
@@ -170,6 +177,7 @@ function clearBusinessData() {
   dashboard.value = { nodeCount: 0, onlineNodeCount: 0, degradedNodeCount: 0, userCount: 0, connections: 0, totalTraffic: 0 }
   userPage.total = 0
   clearConnectionDetails()
+  closeProxyDetailsModal()
   clearBatchDetails()
   clearNodeInstallation()
 }
@@ -249,6 +257,12 @@ function closeUserModal() {
 function closeProxyModal() {
   modal.proxy = false
   proxyForm.password = ''
+}
+
+function closeProxyDetailsModal() {
+  modal.proxyDetails = false
+  proxyCredentialData.value = null
+  revealProxyCredentials.value = false
 }
 
 async function loadNodes() {
@@ -471,6 +485,7 @@ async function selectNode(nodeId) {
   selectedNodeId.value = nodeId
   localStorage.setItem('selected-node-id', nodeId)
   userPage.page = 1
+  activeView.value = 'users'
   await loadUsers()
 }
 
@@ -569,8 +584,7 @@ async function provisionProxyBatch() {
   try {
     const response = await api.provisionProxyBatch({
       input,
-      userPrefix: proxyBatchForm.userPrefix.trim() || 'socks',
-      protocols: proxyBatchForm.protocols,
+      protocols: ['vless', 'vmess', 'socks'],
       preferredNodeId: proxyBatchForm.preferredNodeId || null,
     }, createIdempotencyKey('proxy-batch'))
     proxyBatchResults.value = response.results || []
@@ -587,6 +601,21 @@ async function provisionProxyBatch() {
   } catch (error) {
     notify(redactBatchError(error, input), 'error')
     proxyBatchForm.input = ''
+  } finally {
+    loading.action = false
+  }
+}
+
+async function showAllocationProxy(allocation) {
+  loading.action = true
+  try {
+    const detail = await api.allocation(allocation.id)
+    if (detail.provisioningMode !== 'UPSTREAM_SOCKS') return
+    proxyCredentialData.value = detail
+    revealProxyCredentials.value = false
+    modal.proxyDetails = true
+  } catch (error) {
+    notify(errorMessage(error), 'error')
   } finally {
     loading.action = false
   }
@@ -774,7 +803,27 @@ async function showConnections(user) {
   }
 }
 
-function openProxy(user) {
+async function openProxy(user) {
+  if (user.proxyBound) {
+    loading.action = true
+    try {
+      const detail = await api.proxy(selectedNodeId.value, user.userId)
+      proxyCredentialData.value = {
+        ...detail,
+        proxyServer: detail.server,
+        proxyPort: detail.port,
+        proxyUsername: detail.username,
+        proxyPassword: detail.password,
+      }
+      revealProxyCredentials.value = false
+      modal.proxyDetails = true
+    } catch (error) {
+      notify(errorMessage(error), 'error')
+    } finally {
+      loading.action = false
+    }
+    return
+  }
   Object.assign(proxyForm, { userId: user.userId, server: '', port: 1080, username: '', password: '' })
   modal.proxy = true
 }
@@ -876,8 +925,12 @@ onBeforeUnmount(() => {
         <div><strong>牛速控制中心</strong><span>多节点统一管理</span></div>
       </div>
 
-      <button class="nav-item active"><Gauge :size="17" />总览</button>
-      <div class="nav-heading">受管节点</div>
+      <button class="nav-item" :class="{ active: activeView === 'overview' }" @click="activeView = 'overview'"><Gauge :size="17" />总览</button>
+      <button class="nav-item" :class="{ active: activeView === 'nodes' }" @click="activeView = 'nodes'"><Server :size="17" />受管节点</button>
+      <button class="nav-item" :class="{ active: activeView === 'allocations' }" @click="activeView = 'allocations'"><Database :size="17" />自动生成记录</button>
+      <button class="nav-item" :class="{ active: activeView === 'users' }" @click="activeView = 'users'"><Users :size="17" />节点用户管理</button>
+      <button class="nav-item" :class="{ active: activeView === 'node-management' }" @click="activeView = 'node-management'"><Wrench :size="17" />节点管理</button>
+      <div class="nav-heading">已注册节点</div>
       <button
         v-for="node in nodes"
         :key="node.id"
@@ -888,7 +941,7 @@ onBeforeUnmount(() => {
         <span class="status-dot" :class="node.status"></span>
         <span><strong>{{ node.name }}</strong><small>{{ node.host || node.baseUrl }}</small></span>
       </button>
-      <button class="add-node-link" @click="modal.node = true"><Plus :size="15" />添加节点</button>
+      <button class="add-node-link" @click="activeView = 'node-management'; modal.node = true"><Plus :size="15" />添加节点</button>
 
       <div class="sidebar-footer">
         <span>控制中心</span><strong>v{{ meta.version }}</strong>
@@ -898,7 +951,7 @@ onBeforeUnmount(() => {
     <main class="main-content">
       <header class="topbar">
         <div>
-          <p class="eyebrow">控制中心 / 总览</p>
+          <p class="eyebrow">控制中心 / {{ pageTitle }}</p>
           <h1>{{ pageTitle }}</h1>
         </div>
         <div class="top-actions">
@@ -910,14 +963,14 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <section class="metrics-grid">
+      <section v-if="activeView === 'overview'" class="metrics-grid">
         <article class="metric-card"><span>在线节点</span><strong>{{ dashboard.onlineNodeCount }}<small>/ {{ dashboard.nodeCount }}</small></strong><i class="metric-icon green"><Server :size="16" /></i></article>
         <article class="metric-card"><span>自动开通</span><strong>{{ dashboard.activeAllocationCount || 0 }}<small v-if="dashboard.retryableAllocationCount">+ {{ dashboard.retryableAllocationCount }} 待重试</small></strong><i class="metric-icon blue"><Database :size="16" /></i></article>
         <article class="metric-card"><span>活跃连接</span><strong>{{ dashboard.connections }}</strong><i class="metric-icon violet"><Activity :size="16" /></i></article>
         <article class="metric-card"><span>累计流量</span><strong>{{ formatBytes(dashboard.totalTraffic) }}</strong><i class="metric-icon orange"><Gauge :size="16" /></i></article>
       </section>
 
-      <section v-if="selectedNode" class="node-hero panel">
+      <section v-if="activeView === 'overview' && selectedNode" class="node-hero panel">
         <div class="node-identity">
           <div class="server-glyph"><Server :size="22" /></div>
           <div>
@@ -943,20 +996,20 @@ onBeforeUnmount(() => {
         <p v-if="selectedNode.lastError" class="node-error">{{ localizedErrorMessage(selectedNode.lastError) }}</p>
       </section>
 
-      <section class="panel proxy-batch-panel">
+      <section v-if="activeView === 'node-management'" class="panel proxy-batch-panel">
         <div class="panel-heading proxy-batch-heading">
           <div><p class="eyebrow">批量 SOCKS 节点生成</p><h2>节点信息输入</h2></div>
           <div class="batch-actions">
             <button class="button ghost icon-text" :disabled="batchConnectionCount === 0" @click="copyAllBatchLinks"><Copy :size="14" />复制所有链接</button>
-            <button class="button primary icon-text" :disabled="loading.action || proxyBatchForm.protocols.length === 0" @click="provisionProxyBatch"><Link :size="15" />生成链接</button>
+            <button class="button primary icon-text" :disabled="loading.action" @click="provisionProxyBatch"><Link :size="15" />生成三协议节点</button>
           </div>
         </div>
         <div class="proxy-batch-body">
           <div class="format-guide">
             <strong>支持两种格式</strong>
-            <code>IP地址 域名 端口 用户名 密码</code>
-            <code>序号 IP 域名 端口 用户名 密码</code>
-            <span>使用空格或制表符分隔；域名没有时填写 <code>-</code>。粘贴时自动清理 WPS/Excel 表格中的字节序标记、不换行空格和全角空格。</span>
+            <code>住宅出口IP SOCKS接入地址 端口 用户名 密码</code>
+            <code>序号 住宅出口IP SOCKS接入地址 端口 用户名 密码</code>
+            <span>SOCKS 接入地址支持 IP 或域名；没有独立接入地址时填写 <code>-</code>，系统将使用住宅出口 IP。使用空格或 Tab 分隔，粘贴时自动清理 WPS/Excel 表格中的字节序标记、不换行空格和全角空格。</span>
           </div>
           <label class="proxy-input-label">批量 SOCKS 节点
             <textarea
@@ -965,17 +1018,16 @@ onBeforeUnmount(() => {
               maxlength="50000"
               spellcheck="false"
               autocomplete="off"
-              placeholder="198.51.100.10 proxy.example.com 1080 示例用户名 示例密码&#10;2 198.51.100.11 - 1080 示例用户名 示例密码"
+              placeholder="38.30.216.149 198.13.46.231 5001 示例用户名 示例密码&#10;2 198.51.100.11 proxy.example.com 1080 示例用户名 示例密码"
               @paste="handleProxyPaste"
               @blur="cleanProxyBatchTextarea"
             ></textarea>
           </label>
           <div class="batch-options">
-            <label>节点用户前缀<input v-model.trim="proxyBatchForm.userPrefix" required maxlength="32" pattern="[A-Za-z0-9._-]+" autocomplete="off" /></label>
             <label>指定节点管理器（可选）
               <select v-model="proxyBatchForm.preferredNodeId"><option value="">自动选择最空闲节点</option><option v-for="node in allocatableNodes" :key="node.id" :value="node.id">{{ node.name }} · {{ node.userCount }}/{{ node.maxUsers }}</option></select>
             </label>
-            <fieldset><legend>生成协议</legend><div class="checkbox-row"><label v-for="protocol in ['vless','vmess','socks']" :key="protocol"><input v-model="proxyBatchForm.protocols" type="checkbox" :value="protocol" />{{ protocol.toUpperCase() }}</label></div></fieldset>
+            <div class="fixed-protocols"><span>固定生成三协议</span><strong>VLESS</strong><strong>VMess</strong><strong>SOCKS5</strong><small>三种入口共同路由到本行住宅 SOCKS 出口</small></div>
           </div>
           <p class="security-note"><ShieldCheck :size="14" />输入中的上游密码提交后立即从文本框清除；批量结果只保留在当前页面内存中，完整链接默认隐藏。</p>
         </div>
@@ -991,22 +1043,30 @@ onBeforeUnmount(() => {
               <div class="batch-row-status">
                 <strong>第 {{ result.rowNumber }} 行</strong>
                 <span v-if="result.error">校验/生成失败</span>
-                <span v-else>{{ result.sourceAddress }}:{{ result.sourcePort }} · {{ result.allocation?.userId }}</span>
+                <span v-else class="residential-bound"><ShieldCheck :size="12" />原生住宅 · 三协议路由已绑定</span>
               </div>
               <p v-if="result.error" class="batch-error">{{ localizedErrorMessage(result.error) }}</p>
-              <div v-else class="batch-links">
-                <div v-for="linkItem in connectionLinks(result.allocation?.connection)" :key="linkItem.protocol">
-                  <span>{{ linkItem.protocol }}</span>
-                  <code>{{ revealBatchSecrets ? linkItem.value : maskedLink(linkItem.value) }}</code>
-                  <button :title="`复制 ${linkItem.protocol}`" @click="copy(linkItem.value)"><Copy :size="13" /></button>
+              <template v-else>
+                <div class="residential-route-summary">
+                  <div><span>住宅出口 IP</span><strong>{{ result.sourceIp || '-' }}</strong></div>
+                  <div><span>SOCKS 接入</span><strong>{{ result.sourceAddress || '-' }}:{{ result.sourcePort || '-' }}</strong></div>
+                  <div><span>节点用户</span><strong>{{ result.allocation?.userId || '-' }}</strong></div>
+                  <div><span>生成协议</span><strong>VLESS / VMess / SOCKS5</strong></div>
                 </div>
-              </div>
+                <div class="batch-links">
+                  <div v-for="linkItem in connectionLinks(result.allocation?.connection)" :key="linkItem.protocol">
+                    <span>{{ linkItem.protocol }}</span>
+                    <code>{{ revealBatchSecrets ? linkItem.value : maskedLink(linkItem.value) }}</code>
+                    <button :title="`复制 ${linkItem.protocol}`" @click="copy(linkItem.value)"><Copy :size="13" /></button>
+                  </div>
+                </div>
+              </template>
             </article>
           </div>
         </div>
       </section>
 
-      <section class="panel allocation-panel">
+      <section v-if="activeView === 'allocations'" class="panel allocation-panel">
         <div class="panel-heading">
           <div><p class="eyebrow">直出节点生成</p><h2>自动生成记录</h2></div>
           <button class="button primary icon-text" :disabled="allocatableNodes.length === 0" @click="openProvision"><Plus :size="15" />生成直出节点</button>
@@ -1021,7 +1081,7 @@ onBeforeUnmount(() => {
                 <td><div class="user-cell"><span class="avatar">{{ allocation.userId.slice(0, 2).toUpperCase() }}</span><span><strong>{{ allocation.userId }}</strong><small>{{ allocation.protocols.join(' / ') }}</small></span></div></td>
                 <td><span class="allocation-state" :class="allocation.state.toLowerCase()">{{ allocationStateText(allocation.state) }}</span><small v-if="allocation.lastError" class="error-detail" :title="localizedErrorMessage(allocation.lastError)">{{ localizedErrorMessage(allocation.lastError) }}</small></td>
                 <td><strong>{{ allocation.nodeName || '-' }}</strong><small class="table-subtext">{{ allocation.nodeHost || '等待节点' }}</small></td>
-                <td><strong>{{ allocation.provisioningMode === 'UPSTREAM_SOCKS' ? '上游 SOCKS' : 'VPS 直出' }}</strong><small class="table-subtext">{{ allocation.provisioningMode === 'UPSTREAM_SOCKS' ? `${allocation.proxyServer || '-'}:${allocation.proxyPort || '-'}` : (allocation.nodeHost || '等待选择节点') }}</small></td>
+                <td><button v-if="allocation.provisioningMode === 'UPSTREAM_SOCKS'" class="link-button" @click="showAllocationProxy(allocation)">上游 SOCKS</button><strong v-else>VPS 直出</strong><small class="table-subtext">{{ allocation.provisioningMode === 'UPSTREAM_SOCKS' ? `${allocation.proxyServer || '-'}:${allocation.proxyPort || '-'}` : (allocation.nodeHost || '等待选择节点') }}</small></td>
                 <td>{{ formatDate(allocation.createdAt) }}</td>
                 <td><div class="row-actions"><button v-if="allocation.state === 'ACTIVE'" class="icon-action" title="查看连接" @click="showAllocationConnection(allocation)"><Link :size="14" />连接</button><button v-if="['RETRYABLE','FAILED','PENDING'].includes(allocation.state)" class="icon-action" :disabled="loading.action" title="重新开通" @click="retryAllocation(allocation)"><RefreshCw :size="14" />重试</button></div></td>
               </tr>
@@ -1030,12 +1090,13 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section class="panel users-panel">
+      <section v-if="activeView === 'users'" class="panel users-panel">
         <div class="panel-heading">
           <div><p class="eyebrow">节点用户管理</p><h2>节点用户</h2></div>
           <div class="table-tools">
             <input v-model="userPage.keyword" placeholder="搜索用户 ID" @keyup.enter="loadUsers(true)" />
             <button class="button ghost icon-text" @click="loadUsers(true)"><Search :size="14" />搜索</button>
+            <button class="button ghost icon-text" :disabled="loading.users || !selectedNode" @click="loadUsers(false)"><RefreshCw :size="14" />刷新</button>
           </div>
         </div>
 
@@ -1064,7 +1125,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section class="node-list-section">
+      <section v-if="activeView === 'nodes'" class="node-list-section">
         <div class="section-title">
           <div><p class="eyebrow">节点注册管理</p><h2>全部节点</h2></div>
           <div class="node-list-actions">
@@ -1170,7 +1231,7 @@ onBeforeUnmount(() => {
         <div class="modal-heading"><div><p class="eyebrow">自动生成节点</p><h2>生成 VPS 直出节点</h2></div><button type="button" class="close-button" title="关闭" @click="modal.provision = false"><X :size="17" /></button></div>
         <div class="provision-intro"><Server :size="19" /><span>控制中心会选择在线且有容量的节点管理器，直接生成 VLESS、VMess 和 SOCKS5。连接使用 VPS 自身出口，不绑定上游代理。</span></div>
         <div class="form-grid">
-          <label>用户 ID<input v-model.trim="provisionForm.userId" required pattern="[A-Za-z0-9._-]+" maxlength="64" placeholder="请输入用户 ID" /></label>
+          <label>用户 ID<input v-model.trim="provisionForm.userId" pattern="[A-Za-z0-9._-]+" maxlength="64" placeholder="留空则自动生成" /></label>
           <label>指定节点管理器（可选）
             <select v-model="provisionForm.preferredNodeId"><option value="">自动选择最空闲节点</option><option v-for="node in allocatableNodes" :key="node.id" :value="node.id">{{ node.name }} · {{ node.userCount }}/{{ node.maxUsers }}</option></select>
           </label>
@@ -1221,6 +1282,21 @@ onBeforeUnmount(() => {
           <div v-if="connectionData.vmess"><span>VMess</span><code>{{ revealConnectionSecrets ? connectionData.vmess : maskedLink(connectionData.vmess) }}</code><button title="复制 VMess" @click="copy(connectionData.vmess)"><Copy :size="14" /></button></div>
           <div v-if="connectionData.socks"><span>SOCKS5</span><code>{{ revealConnectionSecrets ? socksUri(connectionData.socks) : maskedLink(socksUri(connectionData.socks)) }}</code><button title="复制 SOCKS5" @click="copy(socksUri(connectionData.socks))"><Clipboard :size="14" /></button></div>
         </div>
+      </div>
+    </div>
+
+    <div v-if="modal.proxyDetails" class="modal-backdrop" @mousedown.self="closeProxyDetailsModal">
+      <div class="modal-card">
+        <div class="modal-heading"><div><p class="eyebrow">出口代理</p><h2>上游 SOCKS 详情</h2></div><button class="close-button" title="关闭" @click="closeProxyDetailsModal"><X :size="17" /></button></div>
+        <div v-if="proxyCredentialData" class="detail-list">
+          <div><span>住宅出口 IP</span><strong>{{ proxyCredentialData.sourceIp || '-' }}</strong></div>
+          <div><span>代理服务器</span><strong>{{ proxyCredentialData.proxyServer || proxyCredentialData.sourceAddress || '-' }}</strong></div>
+          <div><span>端口</span><strong>{{ proxyCredentialData.proxyPort || '-' }}</strong></div>
+          <div><span>账号</span><strong>{{ revealProxyCredentials ? (proxyCredentialData.proxyUsername || '-') : '••••••••' }}</strong></div>
+          <div><span>密码</span><strong>{{ revealProxyCredentials ? (proxyCredentialData.proxyPassword || '-') : '••••••••' }}</strong></div>
+          <div><span>节点用户 ID</span><strong>{{ proxyCredentialData.userId }}</strong></div>
+        </div>
+        <label class="reveal-toggle connection-reveal"><input v-model="revealProxyCredentials" type="checkbox" /><component :is="revealProxyCredentials ? EyeOff : Eye" :size="14" /><span>{{ revealProxyCredentials ? '隐藏账号密码' : '显示账号密码' }}</span></label>
       </div>
     </div>
 

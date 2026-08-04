@@ -90,6 +90,16 @@ public final class RemoteModels {
     ) {
     }
 
+    public record ProxyDetails(
+            String userId,
+            boolean proxyBound,
+            String server,
+            Integer port,
+            String username,
+            String password
+    ) {
+    }
+
     public record ProxyConfig(
             String type,
             @NotBlank(message = "代理服务器不能为空")

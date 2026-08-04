@@ -385,7 +385,7 @@ class ControlPlaneWebContractTest {
                         .content("""
                                 {
                                   "input":"198.51.100.10 example.test 1080 test-user test-secret",
-                                  "protocols":["socks"],
+                                  "protocols":["vless","vmess","socks"],
                                   "userPrefix":"batch"
                                 }
                                 """))

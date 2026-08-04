@@ -12,6 +12,10 @@ button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .55; }
 code { font-family: "SFMono-Regular", Consolas, monospace; }
+.link-button { border: 0; background: transparent; color: #4f7cff; cursor: pointer; padding: 0; font: inherit; }
+.detail-list { display: grid; gap: 10px; margin: 16px 0; }
+.detail-list > div { display: flex; justify-content: space-between; gap: 20px; padding: 10px 12px; border-radius: 10px; background: #f6f7fb; }
+.detail-list span { color: #687386; }
 
 .app-shell { min-height: 100vh; }
 .sidebar { position: fixed; inset: 0 auto 0 0; width: 250px; padding: 24px 18px; display: flex; flex-direction: column; background: #09111f; color: #d9e2f0; z-index: 20; }
@@ -99,9 +103,12 @@ h2 { margin-bottom: 0; font-size: 18px; letter-spacing: 0; }
 .format-guide > span code { padding: 1px 4px; }
 .proxy-input-label { display: grid; gap: 8px; color: #59667a; font-size: 11px; font-weight: 750; }
 .proxy-input-label textarea { width: 100%; min-height: 180px; resize: vertical; padding: 13px 14px; color: #1b293e; background: #fbfcfe; font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; line-height: 1.65; white-space: pre; }
-.batch-options { display: grid; grid-template-columns: minmax(180px, .65fr) minmax(270px, 1fr) minmax(310px, 1fr); gap: 13px; align-items: end; margin-top: 16px; }
+.batch-options { display: grid; grid-template-columns: minmax(180px, .65fr) minmax(270px, 1fr) minmax(360px, 1.2fr); gap: 13px; align-items: end; margin-top: 16px; }
 .batch-options > label { display: grid; gap: 7px; margin: 0; color: #59667a; font-size: 11px; font-weight: 750; }
-.batch-options fieldset { margin: 0; padding: 10px 13px 11px; }
+.fixed-protocols { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; min-height: 62px; padding: 10px 13px; color: #627187; background: #f4faf8; border: 1px solid #d9eee7; border-radius: 9px; font-size: 10px; }
+.fixed-protocols > span { width: 100%; color: #526278; font-size: 11px; font-weight: 750; }
+.fixed-protocols strong { padding: 4px 7px; color: #13795a; background: #ddf7ee; border-radius: 6px; font-size: 9px; letter-spacing: .04em; }
+.fixed-protocols small { color: #829085; }
 .security-note { display: flex; align-items: center; gap: 7px; margin: 16px 0 0; color: #65758a; font-size: 11px; }
 .security-note svg { flex: 0 0 auto; color: #278669; }
 .batch-results { border-top: 1px solid #edf0f5; background: #fbfcfe; }
@@ -114,6 +121,12 @@ h2 { margin-bottom: 0; font-size: 18px; letter-spacing: 0; }
 .batch-result-row.invalid { border-left-color: #dd6572; background: #fffafb; }
 .batch-row-status { display: flex; flex-wrap: wrap; gap: 7px 14px; align-items: center; color: #8490a1; font-size: 11px; }
 .batch-row-status strong { color: #35445a; }
+.residential-bound { display: inline-flex; align-items: center; gap: 5px; color: #16805d; font-weight: 800; }
+.residential-route-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 11px; }
+.residential-route-summary > div { min-width: 0; padding: 9px 10px; background: #f5f8fb; border: 1px solid #e6ebf2; border-radius: 7px; }
+.residential-route-summary span, .residential-route-summary strong { display: block; }
+.residential-route-summary span { margin-bottom: 4px; color: #8b97a8; font-size: 9px; }
+.residential-route-summary strong { overflow: hidden; color: #35445a; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .batch-error { margin: 9px 0 0; color: #b74351; font-size: 11px; line-height: 1.55; }
 .batch-links { display: grid; gap: 7px; margin-top: 11px; }
 .batch-links > div { display: grid; grid-template-columns: 60px minmax(0, 1fr) 28px; gap: 8px; align-items: center; padding: 8px 9px; background: #101b2c; border-radius: 7px; }
@@ -185,13 +198,13 @@ fieldset { margin: 2px 0 16px; padding: 13px; border: 1px solid #e1e6ee; border-
   .metrics-grid { grid-template-columns: repeat(2, 1fr); }
   .node-hero { grid-template-columns: 1fr auto; }.node-stats { grid-column: 1 / -1; grid-row: 2; }.node-stats div:first-child { border-left: 0; }
   .node-grid { grid-template-columns: repeat(2, 1fr); }
-  .batch-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }.batch-options fieldset { grid-column: 1 / -1; }
+  .batch-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }.fixed-protocols { grid-column: 1 / -1; }
 }
 
 @media (max-width: 760px) {
   .sidebar { position: static; width: 100%; height: auto; }.node-nav, .nav-heading, .sidebar-footer { display: none; }.brand { padding-bottom: 12px; }.nav-item, .add-node-link { display: inline-flex; width: auto; }
   .main-content { margin-left: 0; padding: 24px 16px 50px; }.topbar, .panel-heading, .section-title { align-items: flex-start; flex-direction: column; }.top-actions, .table-tools, .batch-actions { width: 100%; flex-wrap: wrap; }.top-actions .button, .table-tools input, .batch-actions .button { flex: 1; min-width: 0; }
   .metrics-grid, .node-grid { grid-template-columns: 1fr; }.node-hero { grid-template-columns: 1fr; }.node-stats { grid-column: auto; grid-row: auto; grid-template-columns: repeat(2, 1fr); }.node-actions { position: absolute; right: 18px; top: 18px; }.node-identity { padding-right: 80px; }
-  .form-grid, .batch-options, .format-guide, .account-create-form, .account-row, .account-password-form { grid-template-columns: 1fr; }.batch-options fieldset, .format-guide > span { grid-column: auto; }.proxy-batch-body { padding: 18px 16px; }.batch-summary, .batch-result-list { padding-left: 16px; padding-right: 16px; }.reveal-toggle { margin-left: 0 !important; }.batch-links > div { grid-template-columns: 52px minmax(0, 1fr) 28px; }.modal-card { padding: 22px 18px; }.checkbox-row, .node-list-actions { flex-wrap: wrap; }.account-actions { flex-wrap: wrap; }.install-command-meta { flex-direction: column; gap: 5px; }
+  .form-grid, .batch-options, .format-guide, .account-create-form, .account-row, .account-password-form, .residential-route-summary { grid-template-columns: 1fr; }.fixed-protocols, .format-guide > span { grid-column: auto; }.proxy-batch-body { padding: 18px 16px; }.batch-summary, .batch-result-list { padding-left: 16px; padding-right: 16px; }.reveal-toggle { margin-left: 0 !important; }.batch-links > div { grid-template-columns: 52px minmax(0, 1fr) 28px; }.modal-card { padding: 22px 18px; }.checkbox-row, .node-list-actions { flex-wrap: wrap; }.account-actions { flex-wrap: wrap; }.install-command-meta { flex-direction: column; gap: 5px; }
 }
 
