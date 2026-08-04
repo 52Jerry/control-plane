@@ -186,6 +186,28 @@ cd "..\..\Node Manager"
 python -m unittest discover -s tests -v
 ```
 
+### 5.1 数据库字段兼容修复
+
+当前版本的 `residential_allocations` 表包含 `proxy_source_port`，用于保存原始 SOCKS 节点的端口。旧数据库如果没有该列，页面加载自动生成记录时会出现：
+
+```text
+Unknown column 'ra1_0.proxy_source_port' in 'field list'
+```
+
+Control Plane 启动时会针对 MySQL 检查该表和字段；仅当表已存在且字段缺失时执行一次幂等的 `ALTER TABLE`，不会删除或改写已有数据。非 MySQL 数据库（包括测试用 H2）会跳过该兼容处理。
+
+运行数据库账号需要具备读取元数据和 `ALTER TABLE` 权限。若生产账号没有该权限，可由数据库管理员先手动执行：
+
+```sql
+ALTER TABLE residential_allocations
+  ADD COLUMN proxy_source_port INT NULL
+  AFTER proxy_source_ip;
+```
+
+MySQL 不支持 `ADD COLUMN IF NOT EXISTS`；执行前请先确认字段不存在。Control Plane 启动时会先检查元数据，再执行上述标准 MySQL 语句；并发启动时如果另一实例已经添加字段，会自动忽略重复字段错误。
+
+后续仍应引入 Flyway/Liquibase 统一管理正式数据库迁移。
+
 自动测试覆盖首次账号初始化、BCrypt 哈希、账号创建/停用/重置/删除、旧 Cookie 撤销、Cookie 属性、账号 API 不返回密码哈希、旧 Token 兼容、两种数据格式、WPS/Excel 空白清理、住宅出口 IP 与 SOCKS 接入地址分离、无效行隔离、结果排序、强制三协议、Node Manager 上游参数、住宅路由绑定响应校验、AES-GCM 密文和错误脱敏。
 
 ## 6. 一键安装 Node Manager
