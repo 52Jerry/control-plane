@@ -1016,7 +1016,8 @@ onBeforeUnmount(() => {
         </div>
         <div class="proxy-batch-body">
           <div class="format-guide">
-            <strong>支持两种格式</strong>
+            <code>四列简写：SOCKS 地址 端口 用户名 密码（需选择指定节点管理器）</code>
+            <strong>支持三种格式</strong>
             <code>住宅出口IP SOCKS接入地址 端口 用户名 密码</code>
             <code>序号 住宅出口IP SOCKS接入地址 端口 用户名 密码</code>
             <span>SOCKS 接入地址支持 IP 或域名；没有独立接入地址时填写 <code>-</code>，系统将使用住宅出口 IP。使用空格或 Tab 分隔，粘贴时自动清理 WPS/Excel 表格中的字节序标记、不换行空格和全角空格。</span>
@@ -1034,7 +1035,7 @@ onBeforeUnmount(() => {
             ></textarea>
           </label>
           <div class="batch-options">
-            <label>指定节点管理器（可选）
+            <label>指定节点管理器（四列简写必选）
               <select v-model="proxyBatchForm.preferredNodeId"><option value="">自动选择最空闲节点</option><option v-for="node in allocatableNodes" :key="node.id" :value="node.id">{{ node.name }} · {{ node.userCount }}/{{ node.maxUsers }}</option></select>
             </label>
             <div class="fixed-protocols"><span>固定生成三协议</span><strong>VLESS</strong><strong>VMess</strong><strong>SOCKS5</strong><small>三种入口共同路由到本行住宅 SOCKS 出口</small></div>

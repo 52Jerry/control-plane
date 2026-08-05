@@ -351,7 +351,17 @@ Authorization: Bearer <node-manager-token>
 
 ### 批量 SOCKS 节点的上游与回环判断
 
-批量输入的五列含义固定为“住宅出口 IP、上游 SOCKS 地址、上游端口、上游账号、上游密码”。例如：
+批量输入支持以下格式：
+
+```text
+SOCKS 地址 端口 用户名 密码
+住宅出口 IP 上游 SOCKS 地址 上游端口 上游账号 上游密码
+序号 住宅出口 IP 上游 SOCKS 地址 上游端口 上游账号 上游密码
+```
+
+四列格式要求第一列是真实可访问的 SOCKS 服务地址；它既作为住宅出口标识，也作为 Node Manager 的上游 SOCKS 地址。四列请求必须在页面选择指定的 Node Manager，避免把中转任务随机分配到其他节点。若第一列只是 GeoIP 查询得到的“出口结果 IP”，而该地址没有 SOCKS 服务监听，则无法建立中转，必须使用五列格式补充真实的上游 SOCKS/VPS 地址。
+
+五列输入的含义固定为“住宅出口 IP、上游 SOCKS 地址、上游端口、上游账号、上游密码”。例如：
 
 ```text
 203.0.113.10 198.51.100.20 5001 residential-test-user residential-test-password

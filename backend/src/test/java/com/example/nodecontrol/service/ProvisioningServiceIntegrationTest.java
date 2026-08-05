@@ -215,6 +215,55 @@ class ProvisioningServiceIntegrationTest {
     }
 
     @Test
+    void proxyBatchAcceptsFourColumnDirectSocksFormat() {
+        ManagedNode node = saveOnlineNode("node-four-columns", 10);
+        when(nodeManagerClient.createUser(any(), any(), any())).thenAnswer(invocation -> {
+            CreateUserRequest request = invocation.getArgument(1);
+            return residentialSuccessResponse(request.userId());
+        });
+
+        var response = provisioningService.provisionProxyBatch(
+                "batch-four-columns",
+                new ProxyProvisionRequest(
+                        "198.51.100.44 5001 direct-user direct-password",
+                        List.of("socks"), node.getId()));
+
+        assertThat(response.succeeded()).isEqualTo(1);
+        assertThat(response.failed()).isZero();
+        var result = response.results().getFirst();
+        assertThat(result.sourceIp()).isEqualTo("198.51.100.44");
+        assertThat(result.sourceAddress()).isEqualTo("198.51.100.44");
+        assertThat(result.sourcePort()).isEqualTo(5001);
+
+        ArgumentCaptor<CreateUserRequest> requestCaptor = ArgumentCaptor.forClass(CreateUserRequest.class);
+        verify(nodeManagerClient).createUser(any(), requestCaptor.capture(), any());
+        CreateUserRequest request = requestCaptor.getValue();
+        assertThat(request.userId()).isEqualTo("direct-user");
+        assertThat(request.proxy().server()).isEqualTo("198.51.100.44");
+        assertThat(request.proxy().port()).isEqualTo(5001);
+        assertThat(request.proxy().username()).isEqualTo("direct-user");
+        assertThat(request.proxy().password()).isEqualTo("direct-password");
+    }
+
+    @Test
+    void proxyBatchRejectsFourColumnDirectSocksFormatWithoutPreferredNode() {
+        saveOnlineNode("node-four-columns-required", 10);
+
+        var response = provisioningService.provisionProxyBatch(
+                "batch-four-columns-no-node",
+                new ProxyProvisionRequest(
+                        "198.51.100.45 5001 direct-user direct-password",
+                        List.of("socks"), null));
+
+        assertThat(response.succeeded()).isZero();
+        assertThat(response.failed()).isEqualTo(1);
+        assertThat(response.results().getFirst().error())
+                .contains("四列简写必须指定节点管理器")
+                .doesNotContain("direct-password");
+        verify(nodeManagerClient, never()).createUser(any(), any(), any());
+    }
+
+    @Test
     void proxyBatchKeepsValidRowsWhenOtherRowsAreInvalidAndPreservesSourceOrder() {
         saveOnlineNode("node-a", 10);
         when(nodeManagerClient.createUser(any(), any(), any())).thenAnswer(invocation -> {
@@ -391,7 +440,7 @@ class ProvisioningServiceIntegrationTest {
     void proxyBatchReportsInvalidDomainPortAndColumnCountWithoutCallingNodeManager() {
         String input = "198.51.100.10 bad_domain 1080 user-a secret-a\n"
                 + "198.51.100.11 example.com not-a-port user-b secret-b\n"
-                + "198.51.100.12 example.com 1080 missing-password";
+                + "198.51.100.12 example.com 1080";
 
         var response = provisioningService.provisionProxyBatch(
                 "batch-invalid",
@@ -405,7 +454,7 @@ class ProvisioningServiceIntegrationTest {
                 .allSatisfy(message -> assertThat(message).contains("第 "));
         assertThat(response.results().get(0).error()).contains("SOCKS 接入地址格式不正确");
         assertThat(response.results().get(1).error()).contains("端口不是有效数字");
-        assertThat(response.results().get(2).error()).contains("5 列或带序号的 6 列");
+        assertThat(response.results().get(2).error()).contains("4", "5", "6");
         verify(nodeManagerClient, never()).createUser(any(), any(), any());
     }
 

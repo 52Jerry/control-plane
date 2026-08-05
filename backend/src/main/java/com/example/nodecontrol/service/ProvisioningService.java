@@ -109,6 +109,10 @@ public class ProvisioningService {
             }
             ParsedProxyRow row = parsed.row();
             try {
+                if (row.directSocksFormat() && request.preferredNodeId() == null) {
+                    throw new IllegalArgumentException("第 " + row.rowNumber()
+                            + " 行四列简写必须指定节点管理器");
+                }
                 String userId = normalizeBatchUserId(row.username(), batchKey, row.rowNumber());
                 String rowKey = rowRequestKey(batchKey, row.rowNumber());
                 ProxyConfig proxy = new ProxyConfig(
@@ -748,17 +752,20 @@ public class ProvisioningService {
             }
             int rowNumber = lineIndex + 1;
             String[] columns = line.split("\\s+");
-            String sourceIp = candidateColumn(columns, columns.length == 6 ? 1 : 0);
+            boolean indexed = columns.length == 6;
+            boolean shortFormat = columns.length == 4;
+            String sourceIp = candidateColumn(columns, indexed ? 1 : 0);
             String sourceDomain = normalizeSourceAddressCandidate(
-                    candidateColumn(columns, columns.length == 6 ? 2 : 1));
+                    candidateColumn(columns, indexed ? 2 : shortFormat ? 0 : 1));
             String sourceAddress = sourceDomain == null ? sourceIp : sourceDomain;
             Integer sourcePort = findPort(columns);
             try {
                 ParsedProxyRow row = switch (columns.length) {
-                    case 5 -> parsedRow(rowNumber, columns[0], columns[1], columns[2], columns[3], columns[4]);
-                    case 6 -> parsedRow(rowNumber, columns[1], columns[2], columns[3], columns[4], columns[5]);
+                    case 4 -> parsedRow(rowNumber, columns[0], columns[0], columns[1], columns[2], columns[3], true);
+                    case 5 -> parsedRow(rowNumber, columns[0], columns[1], columns[2], columns[3], columns[4], false);
+                    case 6 -> parsedRow(rowNumber, columns[1], columns[2], columns[3], columns[4], columns[5], false);
                     default -> throw new IllegalArgumentException(
-                            "第 " + rowNumber + " 行格式错误，应为 5 列或带序号的 6 列");
+                            "第 " + rowNumber + " 行格式错误，应为 4 列、5 列或带序号的 6 列");
                 };
                 rows.add(new ProxyRowParseResult(
                         rowNumber, row.sourceIp(), row.sourceAddress(), row.server(), row.port(), row, null));
@@ -782,7 +789,8 @@ public class ProvisioningService {
                                      String sourceDomain,
                                      String portValue,
                                      String username,
-                                     String password) {
+                                     String password,
+                                     boolean directSocksFormat) {
         String ip = requireColumn(sourceIp, rowNumber, "IP");
         String sourceAddress = sourceDomain == null || sourceDomain.isBlank() || "-".equals(sourceDomain)
                 ? null : sourceDomain.trim();
@@ -805,7 +813,7 @@ public class ProvisioningService {
         validateCredential(normalizedPassword, rowNumber, "密码");
         return new ParsedProxyRow(
                 rowNumber, ip, sourceAddress, sourceAddress == null ? ip : sourceAddress, port,
-                normalizedUsername, normalizedPassword);
+                normalizedUsername, normalizedPassword, directSocksFormat);
     }
 
     private String candidateColumn(String[] columns, int index) {
@@ -817,7 +825,7 @@ public class ProvisioningService {
     }
 
     private Integer findPort(String[] columns) {
-        int index = columns.length == 6 ? 3 : 2;
+        int index = columns.length == 6 ? 3 : columns.length == 4 ? 1 : 2;
         if (columns.length <= index) {
             return null;
         }
@@ -1152,7 +1160,8 @@ public class ProvisioningService {
             String server,
             int port,
             String username,
-            String password
+            String password,
+            boolean directSocksFormat
     ) {
     }
 
