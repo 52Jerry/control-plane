@@ -131,13 +131,17 @@ Content-Type: application/json
 
 住宅出口国家由 Control Plane 后端请求 GeoJS 获取，默认接口为 `https://get.geojs.io/v1/ip/geo/{ip}.json`。请求只包含第一列住宅出口 IP，不包含 SOCKS 账号、密码或生成连接。结果在内存中缓存 24 小时；GeoJS 超时、不可访问或返回异常时不影响节点创建，国家和代码降级为 `未知 / ZZ`。可使用 `CONTROL_PLANE_GEOIP_ENABLED`、`CONTROL_PLANE_GEOIP_BASE_URL`、连接/读取超时和缓存时长环境变量覆盖默认配置。
 
-批量结果中的 SOCKS 通用链接由后端使用输入行中的上游 SOCKS 凭据生成，直接指向该行上游 SOCKS 接入地址。认证部分为 UTF-8 `用户名:密码` 的标准 Base64，备注使用国家代码和住宅出口 IP；不能使用 Node Manager 为本地 SOCKS 入口生成的账号密码代替上游凭据：
+批量结果不返回原始上游 SOCKS 通用链接，也不把上游用户名和密码拼进响应。上游 SOCKS 凭据只用于调用 Node Manager 的创建用户接口，并由 Node Manager 写入该节点用户专属的 SOCKS outbound；凭据在 Control Plane 数据库中以密文保存。
 
-```text
-socks://<Base64(用户名:密码)>@<SOCKS接入地址>:<端口>#<国家代码>-<住宅出口IP>
-```
+批量结果中的三种协议连接统一来自 `allocation.connection`：
 
-例如：`socks://<Base64认证>@198.13.46.231:5001#US-38.30.216.149`。该完整链接仅随本次批量结果返回并保存在 Vue 运行内存中，不写入浏览器持久化存储或日志。普通节点连接弹窗仍保留 `socks5://用户名:密码@节点地址:端口` 格式，两种链接的目标语义不同，不能混用。
+- VLESS：Node Manager 为该节点用户生成的本地入口；
+- VMess：Node Manager 为该节点用户生成的本地入口；
+- SOCKS5：Node Manager 为该节点用户生成的本地入口，而不是 `SOCKS接入地址:端口` 的原始上游地址。
+
+三种入口都通过同一个节点用户的 `auth_user` 路由到该行的上游 SOCKS，从而使用第一列住宅出口 IP 对应的代理线路。前端批量结果和“生成链接”功能应复用手动创建节点用户的连接展示逻辑，只展示或复制这三个 Node Manager 入口。
+
+`sourceIp` 是住宅出口 IP，`sourceAddress`/`sourcePort` 是原始上游 SOCKS 接入地址和端口；二者仅用于标识和配置，不应被误拼成节点用户的 SOCKS 连接。上游密码、完整上游 URI 和请求原文不得写入浏览器持久化存储、普通列表响应或日志。
 
 ## 4. 敏感数据处理
 
@@ -148,7 +152,7 @@ socks://<Base64(用户名:密码)>@<SOCKS接入地址>:<端口>#<国家代码>-<
 - 登录密码、Node Manager Token、手动 SOCKS 密码和上游密码提交后清空。
 - 批量输入提交后立即清空；连接结果仅保存在 Vue 运行内存。
 - 完整连接默认遮罩，用户主动选择显示或复制时才使用明文。
-- SOCKS 通用链接中的 Base64 只是客户端链接编码，不是加密；它与其他完整连接一样只保存在当前页面内存并默认遮罩。
+- 批量生成的 VLESS、VMess、SOCKS5 连接只在当前页面运行内存中使用并默认遮罩；不得重新生成或展示包含上游账号密码的原始 SOCKS URI。
 - 退出、401 会话失效、关闭连接弹窗或页面卸载时清理内存敏感信息。
 - Toast 只提示复制成功，不回显复制内容。
 - 账号管理弹窗中的新密码只保存在 Vue 运行内存，提交成功或关闭弹窗时清空。
@@ -344,6 +348,28 @@ Authorization: Bearer <node-manager-token>
 两个接口均设置 `Cache-Control: no-store`。批量生成记录的列表接口不会返回 `username`、`password`；详情接口才会解密返回。批量输入记录中的 `sourcePort` 表示原始 SOCKS 接入端口，`proxyPort` 表示上游代理服务器端口，二者不混用。
 
 ## 后续优化计划
+
+### 批量 SOCKS 节点的上游与回环判断
+
+批量输入的五列含义固定为“住宅出口 IP、上游 SOCKS 地址、上游端口、上游账号、上游密码”。例如：
+
+```text
+203.0.113.10 198.51.100.20 5001 residential-test-user residential-test-password
+```
+
+Control Plane 会在选中的 Node Manager 上创建同名节点用户 `residential-test-user`，并固定请求
+`vless`、`vmess`、`socks` 三种协议；Node Manager 再把三种入口按用户路由到上游
+`198.51.100.20:5001`。第一列只用于原生住宅出口 IP 的 GeoIP 和页面展示，不作为上游连接地址。
+
+为避免把独立 SOCKS 服务误判为代理回环，Node Manager 心跳现在会上报自身公共 SOCKS 入站端口
+`socksPort`，Control Plane 只有在“节点服务器 IP 与上游地址相同，并且端口也相同”时才拒绝。
+旧版 Node Manager 未上报端口时仍采用 IP 级保守保护；刷新/升级节点后即可使用端口级判断。
+
+## 数据库兼容字段
+
+升级时 Control Plane 会自动补齐 `managed_nodes.socks_inbound_port`（以及历史版本需要的
+`residential_allocations.proxy_source_port`）字段，已有节点和分配记录不会被删除。Hibernate 的
+`ddl-auto=update` 与启动时的兼容迁移均为幂等操作。
 
 1. 增加批量用户 ID 冲突预检和可下载的逐行错误报告。
 2. 增加节点用户管理的标签、批量删除和按出口模式过滤。

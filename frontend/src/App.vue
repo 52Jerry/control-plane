@@ -571,11 +571,11 @@ function connectionLinks(connection) {
 function batchConnectionLinks(result) {
   const connection = result?.allocation?.connection
   if (!connection) return []
-  return [
-    connection.vless ? { protocol: 'VLESS', value: connection.vless } : null,
-    connection.vmess ? { protocol: 'VMess', value: connection.vmess } : null,
-    result.socksLink ? { protocol: 'SOCKS 通用', value: result.socksLink } : null,
-  ].filter((link) => link?.value)
+  // Batch provisioning must expose the same three Node Manager entry points
+  // as manual user creation.  `result.socksLink` is the upstream SOCKS
+  // endpoint and contains the upstream credentials; it is not the generated
+  // node user's routed SOCKS entry and must never be shown as a protocol link.
+  return connectionLinks(connection)
 }
 
 function maskedLink(value) {
@@ -1060,7 +1060,7 @@ onBeforeUnmount(() => {
                 <div class="residential-route-summary">
                   <div><span>住宅出口 IP</span><strong>{{ result.sourceIp || '-' }}</strong></div>
                   <div><span>国家 / 代码</span><strong>{{ result.countryName || '未知' }} / {{ result.countryCode || 'ZZ' }}</strong></div>
-                  <div><span>SOCKS 接入</span><strong>{{ result.sourceAddress || '-' }}:{{ result.sourcePort || '-' }}</strong></div>
+                  <div><span>上游 SOCKS</span><strong>{{ result.sourceAddress || '-' }}:{{ result.sourcePort || '-' }}</strong></div>
                   <div><span>节点用户</span><strong>{{ result.allocation?.userId || '-' }}</strong></div>
                   <div><span>生成协议</span><strong>VLESS / VMess / SOCKS5</strong></div>
                 </div>

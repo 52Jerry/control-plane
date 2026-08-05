@@ -52,9 +52,30 @@ public final class RemoteModels {
             int connections,
             int systemConnections,
             int userCount,
+            Integer socksPort,
             TrafficTotals traffic,
             Instant reportedAt
     ) {
+        /** Compatibility constructor for older tests/agents without socksPort. */
+        public AgentHeartbeat(String nodeId,
+                              String name,
+                              String host,
+                              String status,
+                              String managerVersion,
+                              String singboxVersion,
+                              String singbox,
+                              boolean apiAvailable,
+                              double cpu,
+                              double memory,
+                              int connections,
+                              int systemConnections,
+                              int userCount,
+                              TrafficTotals traffic,
+                              Instant reportedAt) {
+            this(nodeId, name, host, status, managerVersion, singboxVersion, singbox,
+                    apiAvailable, cpu, memory, connections, systemConnections, userCount,
+                    null, traffic, reportedAt);
+        }
     }
 
     public record UserSummary(

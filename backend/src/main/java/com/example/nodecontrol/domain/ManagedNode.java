@@ -67,6 +67,10 @@ public class ManagedNode {
     @Column(nullable = false)
     private int userCount;
 
+    /** Public SOCKS inbound port reported by Node Manager for loop protection. */
+    @Column(name = "socks_inbound_port")
+    private Integer socksInboundPort;
+
     @Column(nullable = false)
     private long upload;
 
@@ -152,6 +156,7 @@ public class ManagedNode {
         this.connections = heartbeat.connections();
         this.systemConnections = heartbeat.systemConnections();
         this.userCount = heartbeat.userCount();
+        this.socksInboundPort = heartbeat.socksPort();
         this.upload = heartbeat.traffic() == null ? 0 : heartbeat.traffic().upload();
         this.download = heartbeat.traffic() == null ? 0 : heartbeat.traffic().download();
         this.totalTraffic = heartbeat.traffic() == null ? 0 : heartbeat.traffic().total();
@@ -252,6 +257,10 @@ public class ManagedNode {
 
     public int getUserCount() {
         return userCount;
+    }
+
+    public Integer getSocksInboundPort() {
+        return socksInboundPort;
     }
 
     public long getUpload() {

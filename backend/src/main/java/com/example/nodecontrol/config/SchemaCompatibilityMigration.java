@@ -28,6 +28,8 @@ public class SchemaCompatibilityMigration {
     private static final Logger log = LoggerFactory.getLogger(SchemaCompatibilityMigration.class);
     private static final String ALLOCATION_TABLE = "residential_allocations";
     private static final String SOURCE_PORT_COLUMN = "proxy_source_port";
+    private static final String NODE_TABLE = "managed_nodes";
+    private static final String SOCKS_INBOUND_PORT_COLUMN = "socks_inbound_port";
 
     private final DataSource dataSource;
     private final JdbcTemplate jdbcTemplate;
@@ -61,6 +63,12 @@ public class SchemaCompatibilityMigration {
                         + "AFTER proxy_source_ip");
                 log.info("Added missing compatibility column {}.{}", ALLOCATION_TABLE, SOURCE_PORT_COLUMN);
             }
+            if (tableExists(metadata, NODE_TABLE)
+                    && !columnExists(metadata, NODE_TABLE, SOCKS_INBOUND_PORT_COLUMN)) {
+                jdbcTemplate.execute("ALTER TABLE managed_nodes "
+                        + "ADD COLUMN socks_inbound_port INT NULL");
+                log.info("Added missing compatibility column {}.{}", NODE_TABLE, SOCKS_INBOUND_PORT_COLUMN);
+            }
         } catch (SQLException exception) {
             throw new IllegalStateException(
                     "无法检查 Control Plane 数据库结构，请确认数据库账号具有读取元数据和 ALTER TABLE 权限",
@@ -76,7 +84,7 @@ public class SchemaCompatibilityMigration {
                 return;
             }
             throw new IllegalStateException(
-                    "无法补齐 Control Plane 数据库字段 residential_allocations.proxy_source_port",
+                    "无法补齐 Control Plane 数据库兼容字段",
                     exception);
         } catch (RuntimeException exception) {
             throw new IllegalStateException(
@@ -96,6 +104,9 @@ public class SchemaCompatibilityMigration {
     }
 
     private boolean exists(ResultSet resultSet) throws SQLException {
+        if (resultSet == null) {
+            return false;
+        }
         try (resultSet) {
             return resultSet.next();
         }

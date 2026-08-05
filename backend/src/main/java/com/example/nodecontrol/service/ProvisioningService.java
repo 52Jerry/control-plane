@@ -46,8 +46,6 @@ import java.net.IDN;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
 
 @Service
 public class ProvisioningService {
@@ -405,7 +403,15 @@ public class ProvisioningService {
             return false;
         }
         String nodeServer = serverIdentity(node);
-        return nodeServer != null && proxyServerAddresses.contains(nodeServer);
+        if (nodeServer == null || !proxyServerAddresses.contains(nodeServer)) {
+            return false;
+        }
+        Integer nodeSocksPort = node.getSocksInboundPort();
+        // New Node Manager heartbeats report the actual SOCKS inbound port.
+        // Only the same server *and* same port is a loop; another SOCKS
+        // service on the VPS is a valid upstream.  Keep the IP-only fallback
+        // for older agents until their next successful heartbeat.
+        return nodeSocksPort == null || nodeSocksPort == proxy.port();
     }
 
     private IllegalStateException proxyLoopException(boolean preferredNode) {
@@ -944,21 +950,13 @@ public class ProvisioningService {
                                                AllocationView allocation,
                                                String error) {
         CountryInfo country = resolveCountry(row.sourceIp());
-        String socksLink = error == null && allocation != null && allocation.proxyBound()
-                ? buildUpstreamSocksLink(row, country)
-                : null;
+        // The generated protocol links live in allocation.connection.  Do not
+        // return an upstream SOCKS URI here: it would expose the submitted
+        // upstream username/password and is not the routed node-user entry.
+        String socksLink = null;
         return new ProxyProvisionResult(
                 row.rowNumber(), row.sourceIp(), row.sourceAddress(),
                 row.server(), row.port(), country.name(), country.code(), socksLink, allocation, error);
-    }
-
-    private String buildUpstreamSocksLink(ParsedProxyRow row, CountryInfo country) {
-        String credentials = row.username() + ":" + row.password();
-        String encodedCredentials = Base64.getEncoder()
-                .encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
-        String host = row.server().contains(":") ? "[" + row.server() + "]" : row.server();
-        return "socks://" + encodedCredentials + "@" + host + ":" + row.port()
-                + "#" + country.code() + "-" + row.sourceIp();
     }
 
     private CountryInfo resolveCountry(String sourceIp) {

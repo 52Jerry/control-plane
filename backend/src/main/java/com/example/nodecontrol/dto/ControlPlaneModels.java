@@ -131,6 +131,7 @@ public final class ControlPlaneModels {
             int connections,
             int systemConnections,
             int userCount,
+            Integer socksInboundPort,
             long upload,
             long download,
             long totalTraffic,

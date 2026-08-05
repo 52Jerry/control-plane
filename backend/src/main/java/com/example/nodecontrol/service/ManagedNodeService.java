@@ -243,6 +243,7 @@ public class ManagedNodeService {
                 node.getConnections(),
                 node.getSystemConnections(),
                 node.getUserCount(),
+                node.getSocksInboundPort(),
                 node.getUpload(),
                 node.getDownload(),
                 node.getTotalTraffic(),

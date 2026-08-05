@@ -244,7 +244,7 @@ class ProvisioningServiceIntegrationTest {
     @Test
     void proxyBatchCreatesThreeProtocolResidentialRouteFromExitIpAndSocksEntryAddress() {
         saveOnlineNode("node-a", 10);
-        when(ipCountryResolver.resolve("38.30.216.149"))
+        when(ipCountryResolver.resolve("203.0.113.10"))
                 .thenReturn(new IpCountryResolver.CountryInfo("美国", "US"));
         when(nodeManagerClient.createUser(any(), any(), any())).thenAnswer(invocation -> {
             CreateUserRequest request = invocation.getArgument(1);
@@ -254,20 +254,23 @@ class ProvisioningServiceIntegrationTest {
         var response = provisioningService.provisionProxyBatch(
                 "batch-residential-route",
                 new ProxyProvisionRequest(
-                        "38.30.216.149\t198.13.46.231\t5001\ttest-user\ttest-password",
+                        "203.0.113.10\t198.51.100.20\t5001\tresidential-test-user\tresidential-test-password",
                         List.of("socks"), null, "residential"));
 
         assertThat(response.succeeded()).isEqualTo(1);
         assertThat(response.failed()).isZero();
         var result = response.results().getFirst();
-        assertThat(result.sourceIp()).isEqualTo("38.30.216.149");
-        assertThat(result.sourceDomain()).isEqualTo("198.13.46.231");
-        assertThat(result.sourceAddress()).isEqualTo("198.13.46.231");
+        assertThat(result.sourceIp()).isEqualTo("203.0.113.10");
+        assertThat(result.sourceDomain()).isEqualTo("198.51.100.20");
+        assertThat(result.sourceAddress()).isEqualTo("198.51.100.20");
         assertThat(result.sourcePort()).isEqualTo(5001);
+        assertThat(result.allocation().userId()).isEqualTo("residential-test-user");
         assertThat(result.countryName()).isEqualTo("美国");
         assertThat(result.countryCode()).isEqualTo("US");
-        assertThat(result.socksLink()).isEqualTo(
-                "socks://dGVzdC11c2VyOnRlc3QtcGFzc3dvcmQ=@198.13.46.231:5001#US-38.30.216.149");
+        // The batch response must not expose an upstream SOCKS URI.  The
+        // generated node-user SOCKS entry is returned under allocation.connection,
+        // alongside VLESS and VMess, just like manual user creation.
+        assertThat(result.socksLink()).isNull();
         assertThat(result.error()).isNull();
         assertThat(result.allocation().protocols()).containsExactly("vless", "vmess", "socks");
         assertThat(result.allocation().proxyBound()).isTrue();
@@ -282,13 +285,15 @@ class ProvisioningServiceIntegrationTest {
         verify(nodeManagerClient).createUser(any(), requestCaptor.capture(), any());
         CreateUserRequest remoteRequest = requestCaptor.getValue();
         assertThat(remoteRequest.protocols()).containsExactly("vless", "vmess", "socks");
-        assertThat(remoteRequest.proxy().server()).isEqualTo("198.13.46.231");
+        assertThat(remoteRequest.proxy().server()).isEqualTo("198.51.100.20");
         assertThat(remoteRequest.proxy().port()).isEqualTo(5001);
+        assertThat(remoteRequest.proxy().username()).isEqualTo("residential-test-user");
+        assertThat(remoteRequest.proxy().password()).isEqualTo("residential-test-password");
 
         ResidentialAllocation stored = allocationRepository.findAll().getFirst();
-        assertThat(stored.getProxySourceIp()).isEqualTo("38.30.216.149");
-        assertThat(stored.getProxySourceDomain()).isEqualTo("198.13.46.231");
-        assertThat(stored.getProxyServer()).isEqualTo("198.13.46.231");
+        assertThat(stored.getProxySourceIp()).isEqualTo("203.0.113.10");
+        assertThat(stored.getProxySourceDomain()).isEqualTo("198.51.100.20");
+        assertThat(stored.getProxyServer()).isEqualTo("198.51.100.20");
         assertThat(stored.getProxyPasswordCipher())
                 .startsWith("enc:v1:")
                 .doesNotContain("test-password");
@@ -335,6 +340,30 @@ class ProvisioningServiceIntegrationTest {
                 .contains("代理回环")
                 .doesNotContain("loop-password");
         verify(nodeManagerClient, never()).createUser(any(), any(), any());
+    }
+
+    @Test
+    void sameServerDifferentUpstreamSocksPortIsAllowed() {
+        ManagedNode node = saveOnlineNodeAtHost("node-independent-socks", 10, "198.51.100.50");
+        node.recordHeartbeat(new AgentHeartbeat(
+                node.getRemoteNodeId(), node.getName(), node.getHost(), "online",
+                node.getManagerVersion(), node.getSingboxVersion(), node.getSingbox(),
+                true, 10, 20, 0, 5, 0, 6000,
+                new TrafficTotals(0, 0, 0, true, "test", Instant.now()), Instant.now()));
+        nodeRepository.saveAndFlush(node);
+        when(nodeManagerClient.createUser(any(), any(), any())).thenAnswer(invocation -> {
+            CreateUserRequest request = invocation.getArgument(1);
+            return residentialSuccessResponse(request.userId());
+        });
+
+        var response = provisioningService.provisionProxyBatch(
+                "batch-independent-socks",
+                new ProxyProvisionRequest(
+                        "38.30.216.149 198.51.100.50 5001 independent-user secret",
+                        List.of("socks"), node.getId(), "independent"));
+
+        assertThat(response.succeeded()).isEqualTo(1);
+        verify(nodeManagerClient).createUser(any(), any(), any());
     }
 
     @Test
