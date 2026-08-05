@@ -61,3 +61,10 @@ control-plane:
   installation:
     token-ttl-seconds: ${CONTROL_PLANE_INSTALL_TOKEN_TTL_SECONDS:600}
     claim-ttl-seconds: ${CONTROL_PLANE_INSTALL_CLAIM_TTL_SECONDS:120}
+
+  geo-ip:
+    enabled: ${CONTROL_PLANE_GEOIP_ENABLED:true}
+    base-url: ${CONTROL_PLANE_GEOIP_BASE_URL:https://get.geojs.io/v1/ip/geo}
+    connect-timeout-millis: ${CONTROL_PLANE_GEOIP_CONNECT_TIMEOUT_MILLIS:1500}
+    read-timeout-millis: ${CONTROL_PLANE_GEOIP_READ_TIMEOUT_MILLIS:2500}
+    cache-ttl-seconds: ${CONTROL_PLANE_GEOIP_CACHE_TTL_SECONDS:86400}

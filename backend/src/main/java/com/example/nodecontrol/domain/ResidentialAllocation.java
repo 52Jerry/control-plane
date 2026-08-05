@@ -31,7 +31,12 @@ public class ResidentialAllocation {
     @Column(nullable = false, length = 128)
     private String requestHash;
 
-    @Column(nullable = false, unique = true, length = 64)
+    /**
+     * Node user ids are scoped to a Node Manager.  They must not be globally
+     * unique across the control plane because two different nodes may both
+     * legitimately have a user named "alice".
+     */
+    @Column(nullable = false, length = 64)
     private String controlUserId;
 
     @Column(nullable = false, length = 128)
@@ -207,6 +212,11 @@ public class ResidentialAllocation {
         if (releaseNode) {
             this.node = null;
         }
+    }
+
+    /** Detach terminal history from a node before that node is removed. */
+    public void detachNode() {
+        this.node = null;
     }
 
     public UUID getId() {

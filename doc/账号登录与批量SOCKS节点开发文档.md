@@ -127,13 +127,17 @@ Content-Type: application/json
 
 每个有效行以该行 SOCKS 用户名作为节点用户 ID，并生成独立远端幂等键。第一列作为住宅出口 IP 保存和展示，第二列作为 Node Manager 实际连接的上游 SOCKS `server`；第二列为 `-` 时才使用第一列。控制面把上游 `server`、端口、账号和密码传给 Node Manager 的创建用户接口，Node Manager 为该用户创建专属 SOCKS5 outbound，并让 VLESS、VMess、SOCKS5 三种入口通过 `auth_user` 路由到同一个住宅出口。
 
-响应包含总数、成功数、失败数和逐行结果。逐行结果分别返回 `sourceIp`（住宅出口 IP）、`sourceAddress`（实际 SOCKS 接入地址）和 `sourcePort`。批量行只有在 Node Manager 返回 `proxyBound=true`、协议列表包含三协议且三种连接均非空时才计为成功；否则该行进入失败/可重试状态，不能误显示为原生住宅节点。成功卡片明确展示“原生住宅 · 三协议路由已绑定”、住宅出口 IP、SOCKS 接入、节点用户和三条连接；失败行包含脱敏后的 `error`。
+响应包含总数、成功数、失败数和逐行结果。逐行结果分别返回 `sourceIp`（住宅出口 IP）、`sourceAddress`（实际 SOCKS 接入地址）、`sourcePort`、`countryName` 和 `countryCode`。批量行只有在 Node Manager 返回 `proxyBound=true`、协议列表包含三协议且三种连接均非空时才计为成功；否则该行进入失败/可重试状态，不能误显示为原生住宅节点。成功卡片明确展示“原生住宅 · 三协议路由已绑定”、住宅出口 IP、国家、代码、SOCKS 接入、节点用户和三条连接；失败行包含脱敏后的 `error`。
 
-SOCKS5 复制格式为标准 URI：
+住宅出口国家由 Control Plane 后端请求 GeoJS 获取，默认接口为 `https://get.geojs.io/v1/ip/geo/{ip}.json`。请求只包含第一列住宅出口 IP，不包含 SOCKS 账号、密码或生成连接。结果在内存中缓存 24 小时；GeoJS 超时、不可访问或返回异常时不影响节点创建，国家和代码降级为 `未知 / ZZ`。可使用 `CONTROL_PLANE_GEOIP_ENABLED`、`CONTROL_PLANE_GEOIP_BASE_URL`、连接/读取超时和缓存时长环境变量覆盖默认配置。
+
+批量结果中的 SOCKS 通用链接由后端使用输入行中的上游 SOCKS 凭据生成，直接指向该行上游 SOCKS 接入地址。认证部分为 UTF-8 `用户名:密码` 的标准 Base64，备注使用国家代码和住宅出口 IP；不能使用 Node Manager 为本地 SOCKS 入口生成的账号密码代替上游凭据：
 
 ```text
-socks5://<URL编码用户名>:<URL编码密码>@<主机>:<端口>
+socks://<Base64(用户名:密码)>@<SOCKS接入地址>:<端口>#<国家代码>-<住宅出口IP>
 ```
+
+例如：`socks://<Base64认证>@198.13.46.231:5001#US-38.30.216.149`。该完整链接仅随本次批量结果返回并保存在 Vue 运行内存中，不写入浏览器持久化存储或日志。普通节点连接弹窗仍保留 `socks5://用户名:密码@节点地址:端口` 格式，两种链接的目标语义不同，不能混用。
 
 ## 4. 敏感数据处理
 
@@ -144,6 +148,7 @@ socks5://<URL编码用户名>:<URL编码密码>@<主机>:<端口>
 - 登录密码、Node Manager Token、手动 SOCKS 密码和上游密码提交后清空。
 - 批量输入提交后立即清空；连接结果仅保存在 Vue 运行内存。
 - 完整连接默认遮罩，用户主动选择显示或复制时才使用明文。
+- SOCKS 通用链接中的 Base64 只是客户端链接编码，不是加密；它与其他完整连接一样只保存在当前页面内存并默认遮罩。
 - 退出、401 会话失效、关闭连接弹窗或页面卸载时清理内存敏感信息。
 - Toast 只提示复制成功，不回显复制内容。
 - 账号管理弹窗中的新密码只保存在 Vue 运行内存，提交成功或关闭弹窗时清空。
@@ -344,3 +349,40 @@ Authorization: Bearer <node-manager-token>
 2. 增加节点用户管理的标签、批量删除和按出口模式过滤。
 3. 为代理详情增加短时授权确认和审计事件（只记录操作者与分配 ID，不记录密码）。
 4. 将自动生成记录改为服务端分页，降低大规模节点池的首屏响应时间。
+
+## 节点用户判重规则（2026-08-05）
+
+节点用户的唯一性不是 Control Plane 全局唯一，而是以下组合唯一：
+
+```text
+节点服务器 IP（或可识别的服务器主机） + 节点用户名
+```
+
+判定顺序：
+
+1. 优先使用 Node Manager 最近一次心跳上报的 `host`。当该字段是 IPv4/IPv6 时，按规范化后的 IP 判定。
+2. 如果心跳 `host` 不是 IP，则回退到节点登记 `baseUrl` 的主机部分；只有该主机部分本身是 IPv4/IPv6 时才接受。这样同一 VPS 使用不同端口或重复登记 API 地址时仍能识别为同一服务器。
+3. 心跳和 `baseUrl` 都没有可确认的 IP 时，拒绝新增并提示先刷新节点心跳，避免把可变化的域名别名误当作服务器身份。
+4. 远端用户预检会遍历同一服务器 IP 下的全部节点登记，防止同一 VPS 通过不同端口、域名或重复登记绕过判重。
+
+新增直连用户、批量 SOCKS 用户和手动创建用户都调用同一套判重逻辑：
+
+- 同一服务器 IP + 同一用户名：拒绝新增。
+- 不同服务器 IP + 同一用户名：允许新增。
+- 本地历史分配记录处于 `FAILED`、已解除节点关联，或对应 Node Manager 用户已经被删除：释放历史记录，不再阻止重新创建。
+- 在写入新分配前，还会查询目标 Node Manager 的 `/api/users?keyword=<用户名>`；即使 Control Plane 没有历史记录，只要远端当前仍存在该用户，也会拒绝新增。
+- 删除节点登记前会解除历史分配与节点的关联，避免删除节点后残留记录继续造成误判。
+
+实现位置：
+
+- `backend/src/main/java/com/example/nodecontrol/service/ProvisioningService.java`：服务器身份规范化、远端用户预检、本地活动分配判重。
+- `backend/src/main/java/com/example/nodecontrol/service/NodeUserService.java`：手动创建和删除用户复用判重/释放逻辑。
+- `backend/src/main/java/com/example/nodecontrol/service/ManagedNodeService.java`：删除节点时解除历史分配关联。
+- `backend/src/main/java/com/example/nodecontrol/config/SchemaCompatibilityMigration.java`：移除历史 `control_user_id` 全局唯一索引，保留按服务器逻辑判重。
+
+上线时请确认数据库不存在旧的全局唯一索引；应用启动会尝试自动迁移，但仍建议检查：
+
+```sql
+SHOW INDEX FROM residential_allocations;
+SHOW COLUMNS FROM residential_allocations LIKE 'proxy_source_port';
+```

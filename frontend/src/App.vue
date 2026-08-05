@@ -73,7 +73,7 @@ const pageTitle = computed(() => ({
 }[activeView.value] || '节点控制中心'))
 const allocatableNodes = computed(() => nodes.value.filter((node) => node.enabled && !node.maintenance && ['online', 'degraded'].includes(node.status) && node.userCount < node.maxUsers))
 const batchConnectionCount = computed(() => proxyBatchResults.value.reduce(
-  (total, result) => total + connectionLinks(result.allocation?.connection).length,
+  (total, result) => total + batchConnectionLinks(result).length,
   0,
 ))
 const installRemainingSeconds = computed(() => {
@@ -568,6 +568,16 @@ function connectionLinks(connection) {
   ].filter(Boolean)
 }
 
+function batchConnectionLinks(result) {
+  const connection = result?.allocation?.connection
+  if (!connection) return []
+  return [
+    connection.vless ? { protocol: 'VLESS', value: connection.vless } : null,
+    connection.vmess ? { protocol: 'VMess', value: connection.vmess } : null,
+    result.socksLink ? { protocol: 'SOCKS 通用', value: result.socksLink } : null,
+  ].filter((link) => link?.value)
+}
+
 function maskedLink(value) {
   if (!value) return ''
   return '••••••••••••••••••••••••••••••••'
@@ -622,7 +632,7 @@ async function showAllocationProxy(allocation) {
 }
 
 async function copyAllBatchLinks() {
-  const values = proxyBatchResults.value.flatMap((result) => connectionLinks(result.allocation?.connection)
+  const values = proxyBatchResults.value.flatMap((result) => batchConnectionLinks(result)
     .map((link) => link.value))
   if (!values.length) return
   await copy(values.join('\n'))
@@ -1049,12 +1059,13 @@ onBeforeUnmount(() => {
               <template v-else>
                 <div class="residential-route-summary">
                   <div><span>住宅出口 IP</span><strong>{{ result.sourceIp || '-' }}</strong></div>
+                  <div><span>国家 / 代码</span><strong>{{ result.countryName || '未知' }} / {{ result.countryCode || 'ZZ' }}</strong></div>
                   <div><span>SOCKS 接入</span><strong>{{ result.sourceAddress || '-' }}:{{ result.sourcePort || '-' }}</strong></div>
                   <div><span>节点用户</span><strong>{{ result.allocation?.userId || '-' }}</strong></div>
                   <div><span>生成协议</span><strong>VLESS / VMess / SOCKS5</strong></div>
                 </div>
                 <div class="batch-links">
-                  <div v-for="linkItem in connectionLinks(result.allocation?.connection)" :key="linkItem.protocol">
+                  <div v-for="linkItem in batchConnectionLinks(result)" :key="linkItem.protocol">
                     <span>{{ linkItem.protocol }}</span>
                     <code>{{ revealBatchSecrets ? linkItem.value : maskedLink(linkItem.value) }}</code>
                     <button :title="`复制 ${linkItem.protocol}`" @click="copy(linkItem.value)"><Copy :size="13" /></button>

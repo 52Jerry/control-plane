@@ -22,7 +22,19 @@ public interface ResidentialAllocationRepository extends JpaRepository<Residenti
     Optional<ResidentialAllocation> findByRequestKey(String requestKey);
 
     @EntityGraph(attributePaths = "node")
-    Optional<ResidentialAllocation> findByControlUserId(String controlUserId);
+    List<ResidentialAllocation> findAllByNodeIdAndControlUserIdAndStateInAndIdNot(
+            UUID nodeId, String controlUserId, Collection<String> states, UUID allocationId);
+
+    @EntityGraph(attributePaths = "node")
+    List<ResidentialAllocation> findAllByNodeIdAndControlUserIdAndStateIn(
+            UUID nodeId, String controlUserId, Collection<String> states);
+
+    @EntityGraph(attributePaths = "node")
+    List<ResidentialAllocation> findAllByControlUserIdAndStateIn(
+            String controlUserId, Collection<String> states);
+
+    @EntityGraph(attributePaths = "node")
+    List<ResidentialAllocation> findAllByNodeId(UUID nodeId);
 
     @EntityGraph(attributePaths = "node")
     List<ResidentialAllocation> findAllBy(Sort sort);

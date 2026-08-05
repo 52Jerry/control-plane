@@ -4,6 +4,7 @@ import com.example.nodecontrol.client.NodeManagerClient;
 import com.example.nodecontrol.config.ControlPlaneProperties;
 import com.example.nodecontrol.domain.ManagedNode;
 import com.example.nodecontrol.domain.ManagedNodeRepository;
+import com.example.nodecontrol.domain.ResidentialAllocation;
 import com.example.nodecontrol.domain.ResidentialAllocationRepository;
 import com.example.nodecontrol.dto.ControlPlaneModels.AgentRegistrationRequest;
 import com.example.nodecontrol.dto.ControlPlaneModels.AgentRegistrationResponse;
@@ -157,6 +158,9 @@ public class ManagedNodeService {
         if (allocationRepository.countByNodeIdAndStateIn(nodeId, NODE_BLOCKING_ALLOCATION_STATES) > 0) {
             throw new IllegalStateException("节点仍有活动或待重试的自动开通记录，不能移除");
         }
+        var historicalAllocations = allocationRepository.findAllByNodeId(nodeId);
+        historicalAllocations.forEach(ResidentialAllocation::detachNode);
+        allocationRepository.saveAll(historicalAllocations);
         repository.delete(node);
     }
 

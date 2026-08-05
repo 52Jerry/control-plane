@@ -42,6 +42,35 @@ class SchemaCompatibilityMigrationTest {
     }
 
     @Test
+    void removesLegacyGlobalUserIdIndex() throws Exception {
+        DataSource dataSource = mock(DataSource.class);
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        Connection connection = mock(Connection.class);
+        DatabaseMetaData metadata = mock(DatabaseMetaData.class);
+        ResultSet table = resultSet(true);
+        ResultSet column = resultSet(true);
+        ResultSet indexes = mock(ResultSet.class);
+
+        when(dataSource.getConnection()).thenReturn(connection);
+        when(connection.getMetaData()).thenReturn(metadata);
+        when(metadata.getDatabaseProductName()).thenReturn("MySQL");
+        when(metadata.getTables(null, null, "residential_allocations", new String[]{"TABLE"}))
+                .thenReturn(table);
+        when(metadata.getIndexInfo(null, null, "residential_allocations", false, false))
+                .thenReturn(indexes);
+        when(indexes.next()).thenReturn(true, false);
+        when(indexes.getString("INDEX_NAME")).thenReturn("UK_legacy_control_user_id");
+        when(indexes.getString("COLUMN_NAME")).thenReturn("control_user_id");
+        when(indexes.getBoolean("NON_UNIQUE")).thenReturn(false);
+        when(metadata.getColumns(null, null, "residential_allocations", "proxy_source_port"))
+                .thenReturn(column);
+
+        new SchemaCompatibilityMigration(dataSource, jdbcTemplate).migrate();
+
+        verify(jdbcTemplate).execute(contains("DROP INDEX `UK_legacy_control_user_id`"));
+    }
+
+    @Test
     void skipsNonMySqlDatabase() throws Exception {
         DataSource dataSource = mock(DataSource.class);
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);

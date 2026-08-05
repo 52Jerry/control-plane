@@ -79,11 +79,33 @@ public class NodeManagerClient {
     }
 
     public UserConnection getConnections(ManagedNode node, String userId) {
-        return execute(() -> client(node).get()
-                .uri("/api/user/{userId}/connections", userId)
-                .retrieve()
-                .onStatus(HttpStatusCode::isError, this::handleError)
-                .body(UserConnection.class));
+        return execute(() -> {
+            JsonNode body = client(node).get()
+                    .uri("/api/user/{userId}/connections", userId)
+                    .retrieve()
+                    .onStatus(HttpStatusCode::isError, this::handleError)
+                    .body(JsonNode.class);
+            if (body == null || body.isNull()) {
+                throw new RemoteNodeException(502, "节点返回了空响应");
+            }
+
+            // Some older Node Manager versions returned HTTP 200 with a
+            // success=false envelope instead of using HTTP 409/404 when the
+            // requested user had already been deleted. Normalize that shape
+            // to the same exception used by the status-code path so stale
+            // local allocations can be released safely.
+            if (hasExplicitFailure(body)) {
+                String message = extractErrorMessage(body);
+                int status = message == null || message.isBlank() ? 502 : 409;
+                throw new RemoteNodeException(status,
+                        message == null || message.isBlank() ? "节点用户查询失败" : message);
+            }
+            try {
+                return objectMapper.treeToValue(unwrapEnvelope(body), UserConnection.class);
+            } catch (IOException exception) {
+                throw new RemoteNodeException(502, "节点返回的用户连接响应格式无效", exception);
+            }
+        });
     }
 
     public TrafficResponse getTraffic(ManagedNode node, String userId) {
@@ -113,12 +135,32 @@ public class NodeManagerClient {
     }
 
     public OperationResponse deleteUser(ManagedNode node, String userId, String idempotencyKey) {
-        return execute(() -> client(node).delete()
-                .uri("/api/user/delete/{userId}", userId)
-                .header("Idempotency-Key", idempotencyKey)
-                .retrieve()
-                .onStatus(HttpStatusCode::isError, this::handleError)
-                .body(OperationResponse.class));
+        return execute(() -> {
+            JsonNode body = client(node).delete()
+                    .uri("/api/user/delete/{userId}", userId)
+                    .header("Idempotency-Key", idempotencyKey)
+                    .retrieve()
+                    .onStatus(HttpStatusCode::isError, this::handleError)
+                    .body(JsonNode.class);
+            if (body == null || body.isNull()) {
+                throw new RemoteNodeException(502, "节点返回了空响应");
+            }
+            try {
+                OperationResponse response = objectMapper.treeToValue(unwrapEnvelope(body), OperationResponse.class);
+                // Older Node Manager versions used HTTP 200 with
+                // {success:false,message:"user not found"} when DELETE was
+                // repeated. DELETE is idempotent, so normalize that response
+                // to success and let the control plane release its stale
+                // local allocation.
+                String message = extractErrorMessage(body);
+                if (response != null && !response.success() && isMissingUserMessage(message)) {
+                    return new OperationResponse(true, userId, "remote user already absent");
+                }
+                return response;
+            } catch (IOException exception) {
+                throw new RemoteNodeException(502, "节点返回的删除响应格式无效", exception);
+            }
+        });
     }
 
     public ReloadResponse reload(ManagedNode node) {
@@ -161,9 +203,9 @@ public class NodeManagerClient {
         if (!raw.isBlank()) {
             try {
                 JsonNode body = objectMapper.readTree(raw);
-                JsonNode detail = body.path("detail");
-                if (detail.isTextual()) {
-                    message = detail.asText();
+                String extracted = extractErrorMessage(body);
+                if (extracted != null && !extracted.isBlank()) {
+                    message = extracted;
                 }
             } catch (IOException ignored) {
                 message = raw;
@@ -173,6 +215,83 @@ public class NodeManagerClient {
             message = "节点请求失败: HTTP " + response.getStatusCode().value();
         }
         throw new RemoteNodeException(response.getStatusCode().value(), message);
+    }
+
+    private String extractErrorMessage(JsonNode body) {
+        if (body == null || body.isNull()) {
+            return null;
+        }
+        for (String field : new String[]{"detail", "message", "error"}) {
+            JsonNode value = body.get(field);
+            if (value == null || value.isNull()) {
+                continue;
+            }
+            if (value.isTextual()) {
+                return value.asText();
+            }
+            if (value.isArray()) {
+                for (JsonNode item : value) {
+                    if (item.isTextual()) {
+                        return item.asText();
+                    }
+                    JsonNode itemMessage = item.get("msg");
+                    if (itemMessage != null && itemMessage.isTextual()) {
+                        return itemMessage.asText();
+                    }
+                }
+            }
+        }
+        for (String field : new String[]{"data", "result", "payload"}) {
+            String nestedMessage = extractErrorMessage(body.get(field));
+            if (nestedMessage != null && !nestedMessage.isBlank()) {
+                return nestedMessage;
+            }
+        }
+        return null;
+    }
+
+    private boolean hasExplicitFailure(JsonNode body) {
+        if (body == null || body.isNull()) {
+            return false;
+        }
+        JsonNode success = body.get("success");
+        if (success != null && success.isBoolean() && !success.asBoolean()) {
+            return true;
+        }
+        for (String field : new String[]{"data", "result", "payload"}) {
+            if (hasExplicitFailure(body.get(field))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private JsonNode unwrapEnvelope(JsonNode body) {
+        if (body == null || body.isNull()) {
+            return body;
+        }
+        for (String field : new String[]{"data", "result", "payload"}) {
+            JsonNode nested = body.get(field);
+            if (nested != null && nested.isObject()
+                    && (nested.has("success") || nested.has("userId") || nested.has("uuid")
+                    || nested.has("protocols") || nested.has("vless") || nested.has("vmess"))) {
+                return nested;
+            }
+        }
+        return body;
+    }
+
+    private boolean isMissingUserMessage(String message) {
+        if (message == null || message.isBlank()) {
+            return false;
+        }
+        String normalized = message.trim().toLowerCase(java.util.Locale.ROOT);
+        return normalized.contains("user not found")
+                || normalized.contains("user does not exist")
+                || normalized.contains("no such user")
+                || normalized.contains("user already deleted")
+                || normalized.contains("\u7528\u6237\u4e0d\u5b58\u5728")
+                || normalized.contains("\u7528\u6237\u672a\u627e\u5230");
     }
 
     @FunctionalInterface

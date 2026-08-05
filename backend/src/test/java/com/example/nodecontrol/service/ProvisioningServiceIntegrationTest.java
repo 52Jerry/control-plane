@@ -14,6 +14,9 @@ import com.example.nodecontrol.dto.RemoteModels.CreateUserRequest;
 import com.example.nodecontrol.dto.RemoteModels.CreateUserResponse;
 import com.example.nodecontrol.dto.RemoteModels.SocksConnection;
 import com.example.nodecontrol.dto.RemoteModels.TrafficTotals;
+import com.example.nodecontrol.dto.RemoteModels.UserConnection;
+import com.example.nodecontrol.dto.RemoteModels.UserPage;
+import com.example.nodecontrol.dto.RemoteModels.UserSummary;
 import com.example.nodecontrol.security.SecretCipher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,11 +27,13 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -61,11 +66,19 @@ class ProvisioningServiceIntegrationTest {
     @MockitoBean
     private NodeManagerClient nodeManagerClient;
 
+    @MockitoBean
+    private IpCountryResolver ipCountryResolver;
+
+    @MockitoBean
+    private HostAddressResolver hostAddressResolver;
+
     @BeforeEach
     void cleanDatabase() {
         allocationRepository.deleteAll();
         nodeRepository.deleteAll();
-        reset(nodeManagerClient);
+        reset(nodeManagerClient, ipCountryResolver, hostAddressResolver);
+        when(ipCountryResolver.resolve(any())).thenReturn(IpCountryResolver.UNKNOWN);
+        when(hostAddressResolver.resolve(any())).thenReturn(Set.of());
     }
 
     @Test
@@ -231,6 +244,8 @@ class ProvisioningServiceIntegrationTest {
     @Test
     void proxyBatchCreatesThreeProtocolResidentialRouteFromExitIpAndSocksEntryAddress() {
         saveOnlineNode("node-a", 10);
+        when(ipCountryResolver.resolve("38.30.216.149"))
+                .thenReturn(new IpCountryResolver.CountryInfo("美国", "US"));
         when(nodeManagerClient.createUser(any(), any(), any())).thenAnswer(invocation -> {
             CreateUserRequest request = invocation.getArgument(1);
             return residentialSuccessResponse(request.userId());
@@ -249,6 +264,10 @@ class ProvisioningServiceIntegrationTest {
         assertThat(result.sourceDomain()).isEqualTo("198.13.46.231");
         assertThat(result.sourceAddress()).isEqualTo("198.13.46.231");
         assertThat(result.sourcePort()).isEqualTo(5001);
+        assertThat(result.countryName()).isEqualTo("美国");
+        assertThat(result.countryCode()).isEqualTo("US");
+        assertThat(result.socksLink()).isEqualTo(
+                "socks://dGVzdC11c2VyOnRlc3QtcGFzc3dvcmQ=@198.13.46.231:5001#US-38.30.216.149");
         assertThat(result.error()).isNull();
         assertThat(result.allocation().protocols()).containsExactly("vless", "vmess", "socks");
         assertThat(result.allocation().proxyBound()).isTrue();
@@ -273,6 +292,49 @@ class ProvisioningServiceIntegrationTest {
         assertThat(stored.getProxyPasswordCipher())
                 .startsWith("enc:v1:")
                 .doesNotContain("test-password");
+    }
+
+    @Test
+    void geoIpFailureFallsBackWithoutBlockingResidentialProvisioning() {
+        saveOnlineNode("node-a", 10);
+        when(ipCountryResolver.resolve("198.51.100.88"))
+                .thenThrow(new IllegalStateException("geo service unavailable"));
+        when(nodeManagerClient.createUser(any(), any(), any())).thenAnswer(invocation -> {
+            CreateUserRequest request = invocation.getArgument(1);
+            return residentialSuccessResponse(request.userId());
+        });
+
+        var response = provisioningService.provisionProxyBatch(
+                "batch-geo-fallback",
+                new ProxyProvisionRequest(
+                        "198.51.100.88 edge.example 1080 geo-user geo-password",
+                        List.of("socks"), null, "geo"));
+
+        assertThat(response.succeeded()).isEqualTo(1);
+        assertThat(response.failed()).isZero();
+        assertThat(response.results().getFirst().countryName()).isEqualTo("未知");
+        assertThat(response.results().getFirst().countryCode()).isEqualTo("ZZ");
+    }
+
+    @Test
+    void proxyDomainResolvingToPreferredNodeIsRejectedToPreventLoop() {
+        ManagedNode node = saveOnlineNodeAtHost("node-proxy-loop", 10, "198.51.100.50");
+        when(hostAddressResolver.resolve("upstream.example"))
+                .thenReturn(Set.of("198.51.100.50"));
+
+        var response = provisioningService.provisionProxyBatch(
+                "batch-proxy-loop",
+                new ProxyProvisionRequest(
+                        "38.30.216.149 upstream.example 5001 loop-user loop-password",
+                        List.of("socks"), node.getId(), "loop"));
+
+        assertThat(response.succeeded()).isZero();
+        assertThat(response.failed()).isEqualTo(1);
+        assertThat(response.results().getFirst().error())
+                .contains("上游 SOCKS 地址相同")
+                .contains("代理回环")
+                .doesNotContain("loop-password");
+        verify(nodeManagerClient, never()).createUser(any(), any(), any());
     }
 
     @Test
@@ -354,6 +416,276 @@ class ProvisioningServiceIntegrationTest {
                 .doesNotContain("proxy-password");
     }
 
+    @Test
+    void sameUserIdIsRejectedOnlyOnTheSameNode() {
+        ManagedNode firstNode = saveOnlineNode("node-scope-a", 10);
+        ManagedNode secondNode = saveOnlineNode("node-scope-b", 10);
+        assertThat(firstNode.getHost()).isNotEqualTo(secondNode.getHost());
+        when(nodeManagerClient.createUser(any(), any(), any())).thenAnswer(invocation -> {
+            CreateUserRequest request = invocation.getArgument(1);
+            return residentialSuccessResponse(request.userId());
+        });
+        when(nodeManagerClient.getConnections(any(), any()))
+                .thenReturn(new UserConnection(
+                        true,
+                        "shared-user",
+                        UUID.randomUUID().toString(),
+                        List.of("vless", "vmess", "socks"),
+                        "vless://existing",
+                        "vmess://existing",
+                        new SocksConnection("203.0.113.10", 5001, "shared-user", "remote-password"),
+                        true,
+                        Instant.now()));
+
+        var first = provisioningService.provisionProxyBatch(
+                "batch-scope-a",
+                new ProxyProvisionRequest(
+                        "198.51.100.31 edge-a.example 1080 shared-user secret-a",
+                        List.of("socks"), firstNode.getId(), "scope"));
+        assertThat(first.succeeded()).isEqualTo(1);
+
+        var sameNode = provisioningService.provisionProxyBatch(
+                "batch-scope-same-node",
+                new ProxyProvisionRequest(
+                        "198.51.100.32 edge-b.example 1081 shared-user secret-b",
+                        List.of("socks"), firstNode.getId(), "scope"));
+        assertThat(sameNode.succeeded()).isZero();
+        assertThat(sameNode.results().getFirst().error())
+                .contains("Node node-scope-a");
+
+        var differentNode = provisioningService.provisionProxyBatch(
+                "batch-scope-b",
+                new ProxyProvisionRequest(
+                        "198.51.100.33 edge-c.example 1082 shared-user secret-c",
+                        List.of("socks"), secondNode.getId(), "scope"));
+        assertThat(differentNode.succeeded()).isEqualTo(1);
+    }
+
+    @Test
+    void sameUserIdIsRejectedAcrossDifferentNodeRecordsWithTheSameServerIp() {
+        ManagedNode firstNode = saveOnlineNodeAtHost("node-ip-a", 10, "198.51.100.10");
+        ManagedNode secondNode = saveOnlineNodeAtHost("node-ip-b", 10, "198.51.100.10");
+        assertThat(firstNode.getId()).isNotEqualTo(secondNode.getId());
+        assertThat(firstNode.getHost()).isEqualTo(secondNode.getHost());
+        when(nodeManagerClient.createUser(any(), any(), any())).thenAnswer(invocation -> {
+            CreateUserRequest request = invocation.getArgument(1);
+            return residentialSuccessResponse(request.userId());
+        });
+        when(nodeManagerClient.getConnections(any(), any()))
+                .thenReturn(new UserConnection(
+                        true,
+                        "same-server-user",
+                        UUID.randomUUID().toString(),
+                        List.of("vless", "vmess", "socks"),
+                        "vless://existing",
+                        "vmess://existing",
+                        new SocksConnection("198.51.100.10", 5001, "same-server-user", "remote-password"),
+                        true,
+                        Instant.now()));
+
+        var first = provisioningService.provisionProxyBatch(
+                "batch-same-server-first",
+                new ProxyProvisionRequest(
+                        "198.51.100.61 edge-a.example 1080 same-server-user secret-a",
+                        List.of("socks"), firstNode.getId(), "same-server"));
+        assertThat(first.succeeded()).isEqualTo(1);
+
+        var second = provisioningService.provisionProxyBatch(
+                "batch-same-server-second",
+                new ProxyProvisionRequest(
+                        "198.51.100.62 edge-b.example 1081 same-server-user secret-b",
+                        List.of("socks"), secondNode.getId(), "same-server"));
+        assertThat(second.succeeded()).isZero();
+        assertThat(second.results().getFirst().error())
+                .contains("节点用户 ID 已存在于节点");
+        verify(nodeManagerClient, times(1)).createUser(any(), any(), any());
+    }
+
+    @Test
+    void existingRemoteUserOnSameServerIpBlocksNewAllocationEvenWithoutLocalHistory() {
+        ManagedNode node = saveOnlineNodeAtHost("node-remote-existing", 10, "198.51.100.90");
+        when(nodeManagerClient.getUsers(any(), any(Integer.class), any(Integer.class), any()))
+                .thenReturn(new UserPage(
+                        List.of(new UserSummary(
+                                "existing-user",
+                                List.of("socks"),
+                                null,
+                                false,
+                                null,
+                                0,
+                                0,
+                                0,
+                                "active",
+                                Instant.now())),
+                        1,
+                        100,
+                        1));
+
+        var response = provisioningService.provisionProxyBatch(
+                "batch-remote-existing",
+                new ProxyProvisionRequest(
+                        "198.51.100.91 edge.example 1080 existing-user secret",
+                        List.of("socks"), node.getId(), "remote-existing"));
+
+        assertThat(response.succeeded()).isZero();
+        assertThat(response.results().getFirst().error())
+                .contains("当前服务器的节点用户");
+        verify(nodeManagerClient, never()).createUser(any(), any(), any());
+    }
+
+    @Test
+    void existingRemoteUserOnDuplicateRegistrationOfSameServerAlsoBlocksNewAllocation() {
+        ManagedNode selectedNode = saveOnlineNodeAtHost("node-duplicate-registration-a", 10, "198.51.100.91");
+        ManagedNode duplicateRegistration = saveOnlineNodeAtHost(
+                "node-duplicate-registration-b", 10, "198.51.100.91");
+        UserPage remotePage = new UserPage(
+                List.of(new UserSummary(
+                        "duplicate-user",
+                        List.of("socks"),
+                        null,
+                        false,
+                        null,
+                        0,
+                        0,
+                        0,
+                        "active",
+                        Instant.now())),
+                1,
+                100,
+                1);
+        when(nodeManagerClient.getUsers(any(), any(Integer.class), any(Integer.class), eq("duplicate-user")))
+                .thenAnswer(invocation -> {
+                    ManagedNode queried = invocation.getArgument(0);
+                    return queried.getBaseUrl().contains("duplicate-registration-b") ? remotePage : null;
+                });
+
+        var response = provisioningService.provisionProxyBatch(
+                "batch-duplicate-registration",
+                new ProxyProvisionRequest(
+                        "198.51.100.92 edge.example 1080 duplicate-user secret",
+                        List.of("socks"), selectedNode.getId(), "duplicate-registration"));
+
+        assertThat(response.succeeded()).isZero();
+        assertThat(response.results().getFirst().error())
+                .contains("当前服务器的节点用户");
+        verify(nodeManagerClient, never()).createUser(any(), any(), any());
+    }
+
+    @Test
+    void fallsBackToNodeManagerBaseUrlWhenHeartbeatDoesNotReportServerIp() {
+        ManagedNode firstNode = saveOnlineNodeAtHost("node-fallback-a", 10, null);
+        ManagedNode secondNode = saveOnlineNodeAtHost("node-fallback-b", 10, null);
+        firstNode.setBaseUrl("http://198.51.100.20:8088");
+        secondNode.setBaseUrl("http://198.51.100.20:9090");
+        nodeRepository.saveAllAndFlush(List.of(firstNode, secondNode));
+        when(nodeManagerClient.createUser(any(), any(), any())).thenAnswer(invocation -> {
+            CreateUserRequest request = invocation.getArgument(1);
+            return residentialSuccessResponse(request.userId());
+        });
+        when(nodeManagerClient.getConnections(any(), any()))
+                .thenReturn(new UserConnection(
+                        true,
+                        "fallback-user",
+                        UUID.randomUUID().toString(),
+                        List.of("vless", "vmess", "socks"),
+                        "vless://existing",
+                        "vmess://existing",
+                        new SocksConnection("198.51.100.20", 5001, "fallback-user", "remote-password"),
+                        true,
+                        Instant.now()));
+
+        var first = provisioningService.provisionProxyBatch(
+                "batch-fallback-first",
+                new ProxyProvisionRequest(
+                        "198.51.100.71 edge-a.example 1080 fallback-user secret-a",
+                        List.of("socks"), firstNode.getId(), "fallback"));
+        assertThat(first.succeeded()).isEqualTo(1);
+
+        var second = provisioningService.provisionProxyBatch(
+                "batch-fallback-second",
+                new ProxyProvisionRequest(
+                        "198.51.100.72 edge-b.example 1081 fallback-user secret-b",
+                        List.of("socks"), secondNode.getId(), "fallback"));
+        assertThat(second.succeeded()).isZero();
+        assertThat(second.results().getFirst().error())
+                .contains("节点用户 ID 已存在于节点");
+    }
+
+    @Test
+    void refusesToCreateWhenNodeServerIdentityCannotBeDetermined() {
+        ManagedNode node = saveOnlineNodeAtHost("node-no-identity", 10, null);
+        node.setBaseUrl("http://");
+        nodeRepository.saveAndFlush(node);
+
+        var response = provisioningService.provisionProxyBatch(
+                "batch-no-identity",
+                new ProxyProvisionRequest(
+                        "198.51.100.80 edge.example 1080 no-identity secret",
+                        List.of("socks"), node.getId(), "identity"));
+
+        assertThat(response.succeeded()).isZero();
+        assertThat(response.results().getFirst().error())
+                .contains("无法识别节点服务器 IP");
+        verify(nodeManagerClient, never()).createUser(any(), any(), any());
+    }
+
+    @Test
+    void detachedHistoryFromDeletedNodeDoesNotBlockReuseOnAnotherNode() {
+        ManagedNode oldNode = saveOnlineNode("node-deleted", 10);
+        ManagedNode newNode = saveOnlineNode("node-after-delete", 10);
+        when(nodeManagerClient.createUser(any(), any(), any())).thenAnswer(invocation -> {
+            CreateUserRequest request = invocation.getArgument(1);
+            return residentialSuccessResponse(request.userId());
+        });
+
+        var created = provisioningService.provisionProxyBatch(
+                "batch-before-delete",
+                new ProxyProvisionRequest(
+                        "198.51.100.41 edge-old.example 1080 reused-user secret-a",
+                        List.of("socks"), oldNode.getId(), "delete"));
+        assertThat(created.succeeded()).isEqualTo(1);
+        ResidentialAllocation history = allocationRepository.findAll().getFirst();
+        history.fail("removed with node", true);
+        history.detachNode();
+        allocationRepository.saveAndFlush(history);
+
+        var reused = provisioningService.provisionProxyBatch(
+                "batch-after-delete",
+                new ProxyProvisionRequest(
+                        "198.51.100.42 edge-new.example 1081 reused-user secret-b",
+                        List.of("socks"), newNode.getId(), "delete"));
+        assertThat(reused.succeeded()).isEqualTo(1);
+    }
+
+    @Test
+    void deletedRemoteUserReleasesStaleAllocationBeforeCreatingAgain() {
+        ManagedNode node = saveOnlineNode("node-remote-deleted", 10);
+        when(nodeManagerClient.createUser(any(), any(), any())).thenAnswer(invocation -> {
+            CreateUserRequest request = invocation.getArgument(1);
+            return residentialSuccessResponse(request.userId());
+        });
+        when(nodeManagerClient.getConnections(any(), any()))
+                .thenThrow(new RemoteNodeException(409, "user not found"));
+
+        var first = provisioningService.provisionProxyBatch(
+                "batch-remote-deleted-first",
+                new ProxyProvisionRequest(
+                        "198.51.100.51 edge-old.example 1080 reused-user secret-a",
+                        List.of("socks"), node.getId(), "remote-deleted"));
+        assertThat(first.succeeded()).isEqualTo(1);
+
+        var second = provisioningService.provisionProxyBatch(
+                "batch-remote-deleted-second",
+                new ProxyProvisionRequest(
+                        "198.51.100.52 edge-new.example 1081 reused-user secret-b",
+                        List.of("socks"), node.getId(), "remote-deleted"));
+        assertThat(second.succeeded()).isEqualTo(1);
+        assertThat(second.results().getFirst().error()).isNull();
+        assertThat(allocationRepository.findAll())
+                .extracting(ResidentialAllocation::getState)
+                .containsExactlyInAnyOrder("FAILED", "ACTIVE");
+    }
+
     private void assertDirectRequest(CreateUserRequest request) {
         assertThat(request.socksUsername()).isNull();
         assertThat(request.socksPassword()).isNull();
@@ -361,6 +693,13 @@ class ProvisioningServiceIntegrationTest {
     }
 
     private ManagedNode saveOnlineNode(String remoteNodeId, int maxUsers) {
+        return saveOnlineNodeAtHost(
+                remoteNodeId,
+                maxUsers,
+                remoteNodeId.endsWith("b") ? "203.0.113.11" : "203.0.113.10");
+    }
+
+    private ManagedNode saveOnlineNodeAtHost(String remoteNodeId, int maxUsers, String host) {
         ManagedNode node = new ManagedNode(
                 "Node " + remoteNodeId,
                 "http://" + remoteNodeId + ".example:8088",
@@ -376,7 +715,7 @@ class ProvisioningServiceIntegrationTest {
         node.recordHeartbeat(new AgentHeartbeat(
                 remoteNodeId,
                 node.getName(),
-                "203.0.113.10",
+                host,
                 "online",
                 "1.4.1",
                 "1.13.14",

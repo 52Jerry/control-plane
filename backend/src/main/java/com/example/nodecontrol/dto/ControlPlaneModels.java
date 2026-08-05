@@ -191,6 +191,9 @@ public final class ControlPlaneModels {
             String sourceDomain,
             String sourceAddress,
             Integer sourcePort,
+            String countryName,
+            String countryCode,
+            String socksLink,
             AllocationView allocation,
             String error
     ) {

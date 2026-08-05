@@ -10,6 +10,7 @@ public class ControlPlaneProperties {
     private final Security security = new Security();
     private final Provisioning provisioning = new Provisioning();
     private final Installation installation = new Installation();
+    private final GeoIp geoIp = new GeoIp();
     private String publicUrl = "";
 
     public Heartbeat getHeartbeat() {
@@ -30,6 +31,10 @@ public class ControlPlaneProperties {
 
     public Installation getInstallation() {
         return installation;
+    }
+
+    public GeoIp getGeoIp() {
+        return geoIp;
     }
 
     public String getPublicUrl() {
@@ -223,6 +228,54 @@ public class ControlPlaneProperties {
 
         public void setScriptUrl(String scriptUrl) {
             this.scriptUrl = scriptUrl;
+        }
+    }
+
+    public static class GeoIp {
+        private boolean enabled = true;
+        private String baseUrl = "https://get.geojs.io/v1/ip/geo";
+        private int connectTimeoutMillis = 1500;
+        private int readTimeoutMillis = 2500;
+        private long cacheTtlSeconds = 86400;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getBaseUrl() {
+            return baseUrl;
+        }
+
+        public void setBaseUrl(String baseUrl) {
+            this.baseUrl = baseUrl;
+        }
+
+        public int getConnectTimeoutMillis() {
+            return connectTimeoutMillis;
+        }
+
+        public void setConnectTimeoutMillis(int connectTimeoutMillis) {
+            this.connectTimeoutMillis = connectTimeoutMillis;
+        }
+
+        public int getReadTimeoutMillis() {
+            return readTimeoutMillis;
+        }
+
+        public void setReadTimeoutMillis(int readTimeoutMillis) {
+            this.readTimeoutMillis = readTimeoutMillis;
+        }
+
+        public long getCacheTtlSeconds() {
+            return cacheTtlSeconds;
+        }
+
+        public void setCacheTtlSeconds(long cacheTtlSeconds) {
+            this.cacheTtlSeconds = cacheTtlSeconds;
         }
     }
 

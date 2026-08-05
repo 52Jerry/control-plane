@@ -17,7 +17,9 @@ import com.example.nodecontrol.dto.RemoteModels.CreateUserResponse;
 import com.example.nodecontrol.dto.RemoteModels.ProxyConfig;
 import com.example.nodecontrol.dto.RemoteModels.SocksConnection;
 import com.example.nodecontrol.dto.RemoteModels.UserConnection;
+import com.example.nodecontrol.dto.RemoteModels.UserPage;
 import com.example.nodecontrol.security.SecretCipher;
+import com.example.nodecontrol.service.IpCountryResolver.CountryInfo;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -38,10 +40,14 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.UUID;
 import java.net.IDN;
 import java.net.InetAddress;
+import java.net.URI;
 import java.net.UnknownHostException;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 
 @Service
 public class ProvisioningService {
@@ -55,6 +61,8 @@ public class ProvisioningService {
     private final SecretCipher secretCipher;
     private final ObjectMapper objectMapper;
     private final ControlPlaneProperties properties;
+    private final HostAddressResolver hostAddressResolver;
+    private final IpCountryResolver ipCountryResolver;
     private final TransactionTemplate transactionTemplate;
 
     public ProvisioningService(ResidentialAllocationRepository allocationRepository,
@@ -63,6 +71,8 @@ public class ProvisioningService {
                                SecretCipher secretCipher,
                                ObjectMapper objectMapper,
                                ControlPlaneProperties properties,
+                               HostAddressResolver hostAddressResolver,
+                               IpCountryResolver ipCountryResolver,
                                PlatformTransactionManager transactionManager) {
         this.allocationRepository = allocationRepository;
         this.nodeRepository = nodeRepository;
@@ -70,6 +80,8 @@ public class ProvisioningService {
         this.secretCipher = secretCipher;
         this.objectMapper = objectMapper;
         this.properties = properties;
+        this.hostAddressResolver = hostAddressResolver;
+        this.ipCountryResolver = ipCountryResolver;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
@@ -92,7 +104,9 @@ public class ProvisioningService {
             if (parsed.error() != null) {
                 results.add(new ProxyProvisionResult(
                         parsed.rowNumber(), parsed.sourceIp(), parsed.sourceDomain(),
-                        parsed.sourceAddress(), parsed.sourcePort(), null, parsed.error()));
+                        parsed.sourceAddress(), parsed.sourcePort(),
+                        IpCountryResolver.UNKNOWN.name(), IpCountryResolver.UNKNOWN.code(),
+                        null, null, parsed.error()));
                 continue;
             }
             ParsedProxyRow row = parsed.row();
@@ -109,9 +123,8 @@ public class ProvisioningService {
                         rowKey, hash(hashInput), provisionRequest, row, proxy);
                 preparedRows.add(new PreparedProxyRow(row, provisionRequest, proxy, allocation));
             } catch (RuntimeException exception) {
-                results.add(new ProxyProvisionResult(
-                        row.rowNumber(), row.sourceIp(), row.sourceAddress(), row.server(), row.port(), null,
-                        sanitizeError(exception.getMessage(), null)));
+                results.add(toProxyResult(
+                        row, null, sanitizeError(exception.getMessage(), null)));
             }
         }
 
@@ -159,7 +172,7 @@ public class ProvisioningService {
     private AllocationView executeProvisioning(ResidentialAllocation allocation,
                                                 ProvisionRequest request,
                                                 ProxyConfig proxy) {
-        PreparedProvisioning prepared = prepare(allocation.getId(), request);
+        PreparedProvisioning prepared = prepare(allocation.getId(), request, proxy);
         if (prepared.activeView() != null) {
             if (proxy != null) {
                 validateResidentialAllocation(prepared.activeView());
@@ -227,9 +240,6 @@ public class ProvisioningService {
                 }
                 return existing;
             }
-            allocationRepository.findByControlUserId(request.userId()).ifPresent(conflict -> {
-                throw new IllegalStateException("用户 ID 已存在于其他分配记录");
-            });
             ResidentialAllocation allocation = new ResidentialAllocation(
                     requestKey,
                     requestHash,
@@ -262,9 +272,6 @@ public class ProvisioningService {
                 }
                 return existing;
             }
-            allocationRepository.findByControlUserId(request.userId()).ifPresent(conflict -> {
-                throw new IllegalStateException("批量生成的用户 ID 已存在于其他分配记录");
-            });
             ResidentialAllocation allocation = new ResidentialAllocation(
                     requestKey,
                     requestHash,
@@ -292,9 +299,12 @@ public class ProvisioningService {
         return result;
     }
 
-    private PreparedProvisioning prepare(UUID allocationId, ProvisionRequest request) {
+    private PreparedProvisioning prepare(UUID allocationId,
+                                         ProvisionRequest request,
+                                         ProxyConfig proxy) {
+        Set<String> proxyServerAddresses = resolveProxyServerAddresses(proxy);
         PreparedProvisioning prepared = transactionTemplate.execute(
-                status -> prepareLocked(allocationId, request));
+                status -> prepareLocked(allocationId, request, proxy, proxyServerAddresses));
         if (prepared == null) {
             throw new IllegalStateException("准备节点开通任务失败");
         }
@@ -302,7 +312,9 @@ public class ProvisioningService {
     }
 
     private PreparedProvisioning prepareLocked(UUID allocationId,
-                                                ProvisionRequest request) {
+                                                ProvisionRequest request,
+                                                ProxyConfig proxy,
+                                                Set<String> proxyServerAddresses) {
         ResidentialAllocation allocation = allocationRepository.findLockedById(allocationId)
                 .orElseThrow(() -> new NoSuchElementException("分配记录不存在"));
         if ("ACTIVE".equals(allocation.getState())) {
@@ -314,10 +326,20 @@ public class ProvisioningService {
 
         ManagedNode node = allocation.getNode();
         if (node == null) {
-            node = selectNode(request.preferredNodeId());
+            node = selectNode(request.preferredNodeId(), proxy, proxyServerAddresses);
         } else if (!isAllocatable(node)) {
             throw new IllegalStateException("该分配首次选中的节点当前不可用，请恢复节点后重试");
+        } else if (wouldProxyLoopThroughNode(node, proxy, proxyServerAddresses)) {
+            if (request.preferredNodeId() != null) {
+                throw proxyLoopException(true);
+            }
+            node = selectNode(null, proxy, proxyServerAddresses);
         }
+        ensureUserIdAvailableOnNode(
+                node,
+                allocation.getControlUserId(),
+                allocation.getId(),
+                "PENDING".equals(allocation.getState()));
         allocation.assignNode(node);
         allocationRepository.saveAndFlush(allocation);
         return new PreparedProvisioning(
@@ -330,23 +352,282 @@ public class ProvisioningService {
         );
     }
 
-    private ManagedNode selectNode(UUID preferredNodeId) {
+    private ManagedNode selectNode(UUID preferredNodeId,
+                                   ProxyConfig proxy,
+                                   Set<String> proxyServerAddresses) {
         List<ManagedNode> nodes = nodeRepository.findAllocatableNodesForUpdate();
         if (preferredNodeId != null) {
             nodes = nodes.stream().filter(node -> node.getId().equals(preferredNodeId)).toList();
             if (nodes.isEmpty()) {
                 throw new IllegalStateException("指定节点当前不可用于自动开通");
             }
+            if (wouldProxyLoopThroughNode(nodes.getFirst(), proxy, proxyServerAddresses)) {
+                throw proxyLoopException(true);
+            }
         }
-        return nodes.stream()
+        List<ManagedNode> capacityNodes = nodes.stream()
                 .filter(this::hasCapacity)
+                .toList();
+        return capacityNodes.stream()
+                .filter(node -> !wouldProxyLoopThroughNode(node, proxy, proxyServerAddresses))
                 .findFirst()
-                .orElseThrow(() -> new IllegalStateException("没有在线且有剩余容量的节点管理器"));
+                .orElseThrow(() -> {
+                    if (!capacityNodes.isEmpty() && proxy != null && !proxyServerAddresses.isEmpty()) {
+                        return proxyLoopException(false);
+                    }
+                    return new IllegalStateException("没有在线且有剩余容量的节点管理器");
+                });
+    }
+
+    private Set<String> resolveProxyServerAddresses(ProxyConfig proxy) {
+        if (proxy == null || proxy.server() == null || proxy.server().isBlank()) {
+            return Set.of();
+        }
+        String server = normalizeServerHost(proxy.server());
+        if (isIpLiteral(server)) {
+            return Set.of(canonicalIp(server));
+        }
+        Set<String> resolved = hostAddressResolver.resolve(server);
+        if (resolved == null || resolved.isEmpty()) {
+            return Set.of();
+        }
+        return resolved.stream()
+                .map(this::normalizeServerHost)
+                .filter(value -> value != null && isIpLiteral(value))
+                .map(this::canonicalIp)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    private boolean wouldProxyLoopThroughNode(ManagedNode node,
+                                              ProxyConfig proxy,
+                                              Set<String> proxyServerAddresses) {
+        if (proxy == null || proxyServerAddresses == null || proxyServerAddresses.isEmpty()) {
+            return false;
+        }
+        String nodeServer = serverIdentity(node);
+        return nodeServer != null && proxyServerAddresses.contains(nodeServer);
+    }
+
+    private IllegalStateException proxyLoopException(boolean preferredNode) {
+        String prefix = preferredNode ? "指定节点的服务器与上游 SOCKS 地址相同" : "没有可用的其他节点承载该上游 SOCKS";
+        return new IllegalStateException(prefix + "，会形成代理回环，请选择其他节点");
     }
 
     private boolean hasCapacity(ManagedNode node) {
         long managed = allocationRepository.countByNodeIdAndStateIn(node.getId(), CAPACITY_STATES);
         return Math.max(node.getUserCount(), managed) < node.getMaxUsers();
+    }
+
+    /**
+     * A node user id is local to the selected Node Manager.  Only active or
+     * in-flight allocations on that same node are conflicts; terminal history
+     * and allocations belonging to other nodes must not block a new user.
+     */
+    /**
+     * Validate a manually-created node user using the same server-scoped
+     * uniqueness rule as automatic provisioning.
+     */
+    public void ensureUserIdAvailableOnNode(ManagedNode node, String userId) {
+        ensureUserIdAvailableOnNode(node, userId, null, true);
+    }
+
+    private void ensureUserIdAvailableOnNode(ManagedNode node,
+                                             String userId,
+                                             UUID ignoredAllocationId,
+                                             boolean checkRemoteNodeUsers) {
+        String targetServer = serverIdentity(node);
+        if (targetServer == null) {
+            throw new IllegalStateException("无法识别节点服务器 IP，请先刷新节点心跳后重试");
+        }
+        if (checkRemoteNodeUsers) {
+            ensureRemoteUserIdAvailableOnServer(node, targetServer, userId);
+        }
+        List<ResidentialAllocation> conflicts = allocationRepository
+                .findAllByControlUserIdAndStateIn(userId, CAPACITY_STATES)
+                .stream()
+                .filter(candidate -> ignoredAllocationId == null
+                        || !candidate.getId().equals(ignoredAllocationId))
+                .filter(candidate -> sameServer(targetServer, candidate.getNode()))
+                .toList();
+        for (ResidentialAllocation conflict : conflicts) {
+            ManagedNode conflictNode = conflict.getNode();
+            if (conflictNode == null) {
+                releaseStaleAllocation(conflict);
+                continue;
+            }
+            try {
+                UserConnection remoteUser = client.getConnections(conflictNode, conflict.getControlUserId());
+                if (remoteUser == null) {
+                    throw new IllegalStateException("无法确认节点用户是否仍存在，请检查节点状态后重试");
+                }
+                if (remoteUser.success()) {
+                    throw new IllegalStateException(
+                            "节点用户 ID 已存在于节点 " + conflictNode.getName() + " 的分配记录中");
+                }
+                releaseStaleAllocation(conflict);
+            } catch (RemoteNodeException exception) {
+                if (isRemoteUserMissing(exception)) {
+                    releaseStaleAllocation(conflict);
+                    continue;
+                }
+                throw new IllegalStateException("无法确认节点用户是否仍存在，请检查节点状态后重试");
+            }
+        }
+    }
+
+    /**
+     * Local allocation history is not authoritative when a user was created
+     * directly on Node Manager or after the history was cleaned up.  Query
+     * the selected node's user list before creating a new user so the rule is
+     * enforced by the actual server IP + username pair.
+     */
+    private void ensureRemoteUserIdAvailableOnServer(ManagedNode targetNode,
+                                                     String targetServer,
+                                                     String userId) {
+        // A VPS may have been registered more than once (different ports or
+        // API domains).  The uniqueness rule is still server-IP scoped, so
+        // inspect every registered Node Manager for that server, not only
+        // the node selected for this request.  This also catches users that
+        // were created directly on an older/duplicate registration and have
+        // no residential_allocations history in Control Plane.
+        List<ManagedNode> serverNodes = new ArrayList<>();
+        serverNodes.add(targetNode);
+        nodeRepository.findAll().stream()
+                .filter(candidate -> candidate != null && candidate != targetNode)
+                .filter(candidate -> targetServer.equalsIgnoreCase(serverIdentity(candidate)))
+                .forEach(serverNodes::add);
+
+        for (ManagedNode node : serverNodes) {
+            final UserPage page;
+            try {
+                page = client.getUsers(node, 1, 100, userId);
+            } catch (RemoteNodeException exception) {
+                throw new IllegalStateException("无法读取节点用户列表，请检查节点状态后重试");
+            }
+            // Mockito-based/unit test doubles and very old agents may return
+            // no body.  A real Node Manager response is always a UserPage;
+            // leave the allocation check as the fallback for a null body.
+            if (page == null || page.items() == null) {
+                continue;
+            }
+            boolean exists = page.items().stream()
+                    .filter(item -> item != null && item.userId() != null)
+                    .anyMatch(item -> userId.equals(item.userId()));
+            if (exists) {
+                throw new IllegalStateException("节点用户 ID 已存在于当前服务器的节点用户中");
+            }
+        }
+    }
+
+    private boolean sameServer(String targetServer, ManagedNode otherNode) {
+        if (targetServer == null || otherNode == null) {
+            return false;
+        }
+        String otherServer = serverIdentity(otherNode);
+        return otherServer != null && targetServer.equalsIgnoreCase(otherServer);
+    }
+
+    private String serverIdentity(ManagedNode node) {
+        if (node == null) {
+            return null;
+        }
+        // The heartbeat host is the authoritative server identity when it is
+        // an IP address. Some Node Manager versions report a hostname
+        // instead, while the registered baseUrl still contains the public
+        // IP; use that IP so two registrations of the same VPS cannot bypass
+        // the server+username uniqueness rule.
+        String heartbeatHost = normalizeServerHost(node.getHost());
+        String baseUrlHost = null;
+        try {
+            URI uri = URI.create(node.getBaseUrl());
+            baseUrlHost = normalizeServerHost(uri.getHost());
+        } catch (RuntimeException ignored) {
+            // A malformed base URL is rejected during node registration, but
+            // old rows may still exist.  Keep the heartbeat value as a
+            // best-effort fallback for those rows.
+        }
+        if (isIpLiteral(heartbeatHost)) {
+            return canonicalIp(heartbeatHost);
+        }
+        if (isIpLiteral(baseUrlHost)) {
+            return canonicalIp(baseUrlHost);
+        }
+        // A hostname alone is not a stable server identity for this rule:
+        // two registrations may use different aliases for the same VPS, and
+        // DNS can change over time.  Require an actual IP from the heartbeat
+        // or the registered Node Manager URL instead of silently falling
+        // back to a hostname and allowing a duplicate user.
+        return null;
+    }
+
+    private String normalizeServerHost(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String normalized = value.trim();
+        if (normalized.startsWith("[") && normalized.endsWith("]")) {
+            normalized = normalized.substring(1, normalized.length() - 1);
+        }
+        while (normalized.endsWith(".")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized.isBlank() ? null : normalized.toLowerCase(Locale.ROOT);
+    }
+
+    private boolean isIpLiteral(String value) {
+        if (value == null || value.isBlank()) {
+            return false;
+        }
+        if (value.matches("^\\d{1,3}(?:\\.\\d{1,3}){3}$")) {
+            String[] parts = value.split("\\.");
+            for (String part : parts) {
+                try {
+                    int number = Integer.parseInt(part);
+                    if (number < 0 || number > 255) {
+                        return false;
+                    }
+                } catch (NumberFormatException ignored) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return value.contains(":") && value.matches("^[0-9a-f:]+$");
+    }
+
+    private String canonicalIp(String value) {
+        if (!isIpLiteral(value)) {
+            return value;
+        }
+        try {
+            return InetAddress.getByName(value).getHostAddress().toLowerCase(Locale.ROOT);
+        } catch (UnknownHostException ignored) {
+            return value;
+        }
+    }
+
+    private void releaseStaleAllocation(ResidentialAllocation allocation) {
+        allocation.fail("远端节点用户已删除，已释放本地分配记录", true);
+        allocationRepository.save(allocation);
+    }
+
+    private boolean isRemoteUserMissing(RemoteNodeException exception) {
+        if (exception.getStatusCode() == 404) {
+            return true;
+        }
+        if (exception.getStatusCode() != 409 || exception.getMessage() == null) {
+            return false;
+        }
+        String message = exception.getMessage().trim().toLowerCase(Locale.ROOT);
+        // Node Manager currently returns "user not found", while older or
+        // localized versions may return an equivalent Chinese message.  Only
+        // treat an explicit missing-user response as stale; other 409
+        // conflicts must continue to block recreation.
+        return message.contains("user not found")
+                || message.contains("user does not exist")
+                || message.contains("用户不存在")
+                || message.contains("用户未找到")
+                || message.contains("用户不存在于");
     }
 
     private boolean isAllocatable(ManagedNode node) {
@@ -662,9 +943,31 @@ public class ProvisioningService {
     private ProxyProvisionResult toProxyResult(ParsedProxyRow row,
                                                AllocationView allocation,
                                                String error) {
+        CountryInfo country = resolveCountry(row.sourceIp());
+        String socksLink = error == null && allocation != null && allocation.proxyBound()
+                ? buildUpstreamSocksLink(row, country)
+                : null;
         return new ProxyProvisionResult(
                 row.rowNumber(), row.sourceIp(), row.sourceAddress(),
-                row.server(), row.port(), allocation, error);
+                row.server(), row.port(), country.name(), country.code(), socksLink, allocation, error);
+    }
+
+    private String buildUpstreamSocksLink(ParsedProxyRow row, CountryInfo country) {
+        String credentials = row.username() + ":" + row.password();
+        String encodedCredentials = Base64.getEncoder()
+                .encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
+        String host = row.server().contains(":") ? "[" + row.server() + "]" : row.server();
+        return "socks://" + encodedCredentials + "@" + host + ":" + row.port()
+                + "#" + country.code() + "-" + row.sourceIp();
+    }
+
+    private CountryInfo resolveCountry(String sourceIp) {
+        try {
+            CountryInfo country = ipCountryResolver.resolve(sourceIp);
+            return country == null ? IpCountryResolver.UNKNOWN : country;
+        } catch (RuntimeException ignored) {
+            return IpCountryResolver.UNKNOWN;
+        }
     }
 
     /**
