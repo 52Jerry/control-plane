@@ -64,15 +64,6 @@
         <resources>
             <resource>
                 <directory>src/main/resources</directory>
-                <!--
-                    application.yml is the developer-only IDEA configuration.  It
-                    imports .env.local and must never be packaged into a release
-                    JAR.  Production uses application-prod.yml and the external
-                    systemd EnvironmentFile instead.
-                -->
-                <excludes>
-                    <exclude>application.yml</exclude>
-                </excludes>
             </resource>
             <resource>
                 <directory>../frontend/dist</directory>
@@ -83,6 +74,18 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <!-- Keep the developer-only file in target/classes so IDEA
+                             can run NodeControlApplication directly, but never put
+                             it into the distributable JAR. -->
+                        <exclude>application.yml</exclude>
+                    </excludes>
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

@@ -56,7 +56,9 @@ public class ProvisioningService {
 
     private static final Collection<String> CAPACITY_STATES = List.of("PROVISIONING", "RETRYABLE", "ACTIVE");
     private static final List<String> RESIDENTIAL_PROTOCOLS = List.of("vless", "vmess", "socks");
-    private static final List<String> COMPLETE_PROTOCOL_LINKS = List.of(
+    private static final List<String> DIRECT_PROTOCOL_LINKS = List.of(
+            "vless", "socksAcceleration", "vmess");
+    private static final List<String> RESIDENTIAL_PROTOCOL_LINKS = List.of(
             "socks5", "bitbrowser", "vless", "socksAcceleration", "vmess");
 
     private final ResidentialAllocationRepository allocationRepository;
@@ -1109,7 +1111,7 @@ public class ProvisioningService {
             throw new IllegalStateException("节点管理器未返回已绑定原生住宅出口的 VLESS、VMess、SOCKS5 三协议连接");
         }
         if (properties.getProvisioning().isRequireCompleteProtocolsAll()
-                && !hasCompleteProtocolsAll(response.protocolsAll())) {
+                && !hasCompleteProtocolsAll(response.protocolsAll(), response.proxyBound())) {
             throw new IllegalStateException("节点管理器未返回完整的五协议连接，请先升级 Node Manager");
         }
     }
@@ -1133,14 +1135,15 @@ public class ProvisioningService {
                 && hasText(connection.vmess())
                 && hasUsableSocksConnection(connection.socks())
                 && (!properties.getProvisioning().isRequireCompleteProtocolsAll()
-                || hasCompleteProtocolsAll(connection.protocolsAll()));
+                || hasCompleteProtocolsAll(connection.protocolsAll(), connection.proxyBound()));
     }
 
-    private boolean hasCompleteProtocolsAll(Map<String, String> protocolsAll) {
+    private boolean hasCompleteProtocolsAll(Map<String, String> protocolsAll, boolean proxyBound) {
         if (protocolsAll == null || protocolsAll.isEmpty()) {
             return false;
         }
-        return COMPLETE_PROTOCOL_LINKS.stream().allMatch(key -> hasText(protocolsAll.get(key)));
+        List<String> required = proxyBound ? RESIDENTIAL_PROTOCOL_LINKS : DIRECT_PROTOCOL_LINKS;
+        return required.stream().allMatch(key -> hasText(protocolsAll.get(key)));
     }
 
     private boolean hasResidentialProtocols(List<String> protocols) {

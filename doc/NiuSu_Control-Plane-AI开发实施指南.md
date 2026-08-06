@@ -78,11 +78,11 @@
 - 保持默认遮罩，点击“复制”才显示明文。
 - Toast 仅提示复制成功，不回显内容。
 
-**验收**：批量开通成功卡片可查看五种协议；关闭弹窗清空前端内存。
+**验收**：批量开通成功卡片按出口模式显示协议；绑定住宅时可查看五种协议，直连时仅显示三种加速协议；关闭弹窗清空前端内存。
 
-五协议键名固定为：`socks5`、`bitbrowser`、`vless`、`socksAcceleration`、`vmess`。其中住宅出口 IP 是 GeoIP/备注来源，上游 SOCKS 地址和凭据用于 Node Manager 的出站绑定，最终 VLESS/VMess/SOCKS 加速链接必须指向 Node Manager 的入口域名或 IP。
+协议键名固定为：`socks5`、`bitbrowser`、`vless`、`socksAcceleration`、`vmess`。返回集合按出口模式动态变化：无住宅出口时只要求 `vless`、`socksAcceleration`、`vmess`；绑定住宅出口时才要求五个键。其中住宅出口 IP 是 GeoIP/备注来源，上游 SOCKS 地址和凭据用于 Node Manager 的出站绑定，最终 VLESS/VMess/SOCKS 加速链接必须指向 Node Manager 的入口域名或 IP。
 
-生产环境配置 `control-plane.provisioning.require-complete-protocols-all=true`（环境变量 `CONTROL_PLANE_REQUIRE_COMPLETE_PROTOCOLS_ALL=true`）时，Control Plane 会拒绝只返回旧版三协议的 Node Manager，并提示先升级 Node Manager。本地默认值为 `false`，便于兼容旧节点。
+生产环境配置 `control-plane.provisioning.require-complete-protocols-all=true`（环境变量 `CONTROL_PLANE_REQUIRE_COMPLETE_PROTOCOLS_ALL=true`）时，Control Plane 会按出口模式校验 Node Manager：直连用户要求三种加速链接，住宅用户要求五种链接。本地默认值为 `false`，便于兼容旧节点。
 
 ---
 

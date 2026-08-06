@@ -654,7 +654,7 @@ function connectionLinks(connection) {
   return [
     connection.vless ? { protocol: 'VLESS', value: connection.vless } : null,
     connection.vmess ? { protocol: 'VMess', value: connection.vmess } : null,
-    connection.socks ? { protocol: 'SOCKS5', value: socksUri(connection.socks) } : null,
+    connection.socks ? { protocol: 'SOCKS', value: socksUri(connection.socks) } : null,
   ].filter(Boolean)
 }
 
@@ -1129,7 +1129,7 @@ onBeforeUnmount(() => {
             <label>指定节点管理器（四列简写必选）
               <select v-model="proxyBatchForm.preferredNodeId"><option value="">自动选择最空闲节点</option><option v-for="node in allocatableNodes" :key="node.id" :value="node.id">{{ node.name }} · {{ node.userCount }}/{{ node.maxUsers }}</option></select>
             </label>
-            <div class="fixed-protocols"><span>固定生成三协议</span><strong>VLESS</strong><strong>VMess</strong><strong>SOCKS5</strong><small>三种入口共同路由到本行住宅 SOCKS 出口</small></div>
+            <div class="fixed-protocols"><span>按出口模式生成协议</span><strong>VLESS</strong><strong>VMess</strong><strong>SOCKS</strong><small>有住宅 SOCKS 时返回五种协议；无住宅时仅返回三种 Node Manager 直出加速链接</small></div>
           </div>
           <p class="security-note"><ShieldCheck :size="14" />输入中的上游密码提交后立即从文本框清除；批量结果只保留在当前页面内存中，完整链接默认隐藏。</p>
         </div>
@@ -1154,7 +1154,7 @@ onBeforeUnmount(() => {
                   <div><span>国家 / 代码</span><strong>{{ result.countryName || '未知' }} / {{ result.countryCode || 'ZZ' }}</strong></div>
                   <div><span>上游 SOCKS</span><strong>{{ result.sourceAddress || '-' }}:{{ result.sourcePort || '-' }}</strong></div>
                   <div><span>节点用户</span><strong>{{ result.allocation?.userId || '-' }}</strong></div>
-                  <div><span>生成协议</span><strong>VLESS / VMess / SOCKS5</strong></div>
+                  <div><span>节点入口</span><strong>VLESS / VMess / SOCKS</strong></div>
                 </div>
                 <div class="batch-links">
                   <div v-for="linkItem in batchConnectionLinks(result)" :key="linkItem.protocol">
@@ -1365,7 +1365,7 @@ onBeforeUnmount(() => {
     <div v-if="modal.provision" class="modal-backdrop" @mousedown.self="modal.provision = false">
       <form class="modal-card wide-card" @submit.prevent="provisionDirect">
         <div class="modal-heading"><div><p class="eyebrow">自动生成节点</p><h2>生成 VPS 直出节点</h2></div><button type="button" class="close-button" title="关闭" @click="modal.provision = false"><X :size="17" /></button></div>
-        <div class="provision-intro"><Server :size="19" /><span>控制中心会选择在线且有容量的节点管理器，直接生成 VLESS、VMess 和 SOCKS5。连接使用 VPS 自身出口，不绑定上游代理。</span></div>
+        <div class="provision-intro"><Server :size="19" /><span>控制中心会选择在线且有容量的节点管理器，直接生成 VLESS、VMess 和 SOCKS 三种加速连接。连接使用 VPS 自身出口，不绑定上游代理。</span></div>
         <div class="form-grid">
           <label>用户 ID<input v-model.trim="provisionForm.userId" pattern="[A-Za-z0-9._-]+" maxlength="64" placeholder="留空则自动生成" /></label>
           <label>指定节点管理器（可选）

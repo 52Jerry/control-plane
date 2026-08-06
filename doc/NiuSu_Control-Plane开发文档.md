@@ -226,7 +226,7 @@ npm.cmd run build
 
 ## 12. 五协议与版本兼容约定
 
-`protocolsAll` 的完整键集合为 `socks5`、`bitbrowser`、`vless`、`socksAcceleration`、`vmess`。列表接口不解密、不返回链接；分配详情或连接详情接口才按需解密并返回。
+`protocolsAll` 的键集合来自五种协议：`socks5`、`bitbrowser`、`vless`、`socksAcceleration`、`vmess`。未绑定住宅出口时只返回 `vless`、`socksAcceleration`、`vmess`；绑定住宅出口时才返回五种。列表接口不解密、不返回链接；分配详情或连接详情接口才按需解密并返回。
 
 生产配置建议：
 
@@ -234,7 +234,7 @@ npm.cmd run build
 CONTROL_PLANE_REQUIRE_COMPLETE_PROTOCOLS_ALL=true
 ```
 
-该开关开启后，住宅分配必须收到新版 Node Manager 的五协议响应；只返回旧版 VLESS/VMess/SOCKS 三协议时会失败并提示升级 Node Manager。本地默认关闭，以兼容尚未升级的测试节点。
+该开关开启后，Control Plane 会按出口模式校验响应：直连用户要求三种加速链接，住宅分配要求五协议响应；缺少对应协议时会失败并提示升级 Node Manager。本地默认关闭，以兼容尚未升级的测试节点。
 
 住宅输入中的第一列是住宅出口 IP，第二列是上游 SOCKS 服务器；Control Plane 将两者分别保存并传给 Node Manager，最终协议链接指向 Node Manager 的实际入口，不直接暴露上游住宅凭据。
 # 角色与审计补充

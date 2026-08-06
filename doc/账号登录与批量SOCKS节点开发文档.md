@@ -5,7 +5,7 @@
 当前实现包含三条完整链路：
 
 1. 管理端从浏览器保存 `X-Control-Token` 改为数据库多账号登录，后端签发 HttpOnly Cookie 会话。
-2. 首页增加“节点信息输入”，批量校验原生住宅 SOCKS 数据，并在可用 Node Manager 上固定生成 VLESS、VMess、SOCKS5 三协议入口；三种入口共同路由到该行住宅 SOCKS 出口。
+2. 首页增加“节点信息输入”，批量校验原生住宅 SOCKS 数据，并在可用 Node Manager 上生成按出口模式返回的协议；绑定住宅时生成 VLESS、VMess、SOCKS 加速及原始 SOCKS5、比特浏览器五种链接，无住宅直连时只生成三种加速链接。
 3. 页面生成短时一次性安装命令，在 VPS 上自动安装 Node Manager 并注册到当前 Control Plane。
 
 原有 VPS 直出、手动创建用户、绑定住宅出口和旧 `X-Control-Token` API 兼容能力继续保留。
@@ -101,7 +101,7 @@ CONTROL_PLANE_ENCRYPTION_KEY=replace-with-a-long-random-encryption-key
 - 端口：数字且范围为 1–65535。
 - 用户名、密码：非空、最长 255 个字符，不允许空白字符和控制字符。
 - 列数：只能是 5 列或 6 列。
-- 协议：批量住宅节点固定生成 VLESS、VMess、SOCKS5 三种协议，前端不可取消，后端不信任客户端传入的协议列表并强制使用三协议。
+- 协议：绑定住宅出口的批量节点生成五种协议（VLESS、VMess、SOCKS 加速、原始 SOCKS5、比特浏览器）；不绑定住宅的直连节点只生成 VLESS、VMess、SOCKS 三种 Node Manager 加速链接。前端不可取消，后端不信任客户端传入的协议列表。
 
 解析结果保留文本中的真实行号。某行错误只在该行返回 `error`，其他有效行继续选择 Node Manager 并开通；响应结果按原始行号排序。
 
@@ -125,21 +125,21 @@ Content-Type: application/json
 }
 ```
 
-每个有效行以该行 SOCKS 用户名作为节点用户 ID，并生成独立远端幂等键。第一列作为住宅出口 IP 保存和展示，第二列作为 Node Manager 实际连接的上游 SOCKS `server`；第二列为 `-` 时才使用第一列。控制面把上游 `server`、端口、账号和密码传给 Node Manager 的创建用户接口，Node Manager 为该用户创建专属 SOCKS5 outbound，并让 VLESS、VMess、SOCKS5 三种入口通过 `auth_user` 路由到同一个住宅出口。
+每个有效行以该行 SOCKS 用户名作为节点用户 ID，并生成独立远端幂等键。第一列作为住宅出口 IP 保存和展示，第二列作为 Node Manager 实际连接的上游 SOCKS `server`；第二列为 `-` 时才使用第一列。控制面把上游 `server`、端口、账号和密码传给 Node Manager 的创建用户接口，Node Manager 为该用户创建专属 SOCKS5 outbound，并让 VLESS、VMess、SOCKS 三种加速入口通过 `auth_user` 路由到同一个住宅出口；住宅场景额外返回原始 SOCKS5 与 BitBrowser 格式。
 
-响应包含总数、成功数、失败数和逐行结果。逐行结果分别返回 `sourceIp`（住宅出口 IP）、`sourceAddress`（实际 SOCKS 接入地址）、`sourcePort`、`countryName` 和 `countryCode`。批量行只有在 Node Manager 返回 `proxyBound=true`、协议列表包含三协议且三种连接均非空时才计为成功；否则该行进入失败/可重试状态，不能误显示为原生住宅节点。成功卡片明确展示“原生住宅 · 三协议路由已绑定”、住宅出口 IP、国家、代码、SOCKS 接入、节点用户和三条连接；失败行包含脱敏后的 `error`。
+响应包含总数、成功数、失败数和逐行结果。逐行结果分别返回 `sourceIp`（住宅出口 IP）、`sourceAddress`（实际 SOCKS 接入地址）、`sourcePort`、`countryName` 和 `countryCode`。批量行只有在 Node Manager 返回 `proxyBound=true`、协议列表包含三种加速入口且三种连接均非空时才计为成功；若启用完整协议校验，还必须包含原始 SOCKS5 与 BitBrowser。否则该行进入失败/可重试状态，不能误显示为原生住宅节点。成功卡片明确展示“原生住宅 · 三协议路由已绑定”、住宅出口 IP、国家、代码、SOCKS 接入、节点用户和可用连接；失败行包含脱敏后的 `error`。
 
 住宅出口国家由 Control Plane 后端请求 GeoJS 获取，默认接口为 `https://get.geojs.io/v1/ip/geo/{ip}.json`。请求只包含第一列住宅出口 IP，不包含 SOCKS 账号、密码或生成连接。结果在内存中缓存 24 小时；GeoJS 超时、不可访问或返回异常时不影响节点创建，国家和代码降级为 `未知 / ZZ`。可使用 `CONTROL_PLANE_GEOIP_ENABLED`、`CONTROL_PLANE_GEOIP_BASE_URL`、连接/读取超时和缓存时长环境变量覆盖默认配置。
 
 批量结果不返回原始上游 SOCKS 通用链接，也不把上游用户名和密码拼进响应。上游 SOCKS 凭据只用于调用 Node Manager 的创建用户接口，并由 Node Manager 写入该节点用户专属的 SOCKS outbound；凭据在 Control Plane 数据库中以密文保存。
 
-批量结果中的三种协议连接统一来自 `allocation.connection`：
+批量结果中的加速协议连接统一来自 `allocation.connection`：
 
 - VLESS：Node Manager 为该节点用户生成的本地入口；
 - VMess：Node Manager 为该节点用户生成的本地入口；
-- SOCKS5：Node Manager 为该节点用户生成的本地入口，而不是 `SOCKS接入地址:端口` 的原始上游地址。
+- SOCKS：Node Manager 为该节点用户生成的本地入口，而不是 `SOCKS接入地址:端口` 的原始上游地址。
 
-三种入口都通过同一个节点用户的 `auth_user` 路由到该行的上游 SOCKS，从而使用第一列住宅出口 IP 对应的代理线路。前端批量结果和“生成链接”功能应复用手动创建节点用户的连接展示逻辑，只展示或复制这三个 Node Manager 入口。
+三种加速入口都通过同一个节点用户的 `auth_user` 路由到该行的上游 SOCKS，从而使用第一列住宅出口 IP 对应的代理线路。绑定住宅时，前端还可展示 `socks5` 和 `bitbrowser` 原始住宅链接；无住宅时不得伪造这两项。
 
 `sourceIp` 是住宅出口 IP，`sourceAddress`/`sourcePort` 是原始上游 SOCKS 接入地址和端口；二者仅用于标识和配置，不应被误拼成节点用户的 SOCKS 连接。上游密码、完整上游 URI 和请求原文不得写入浏览器持久化存储、普通列表响应或日志。
 
@@ -152,7 +152,7 @@ Content-Type: application/json
 - 登录密码、Node Manager Token、手动 SOCKS 密码和上游密码提交后清空。
 - 批量输入提交后立即清空；连接结果仅保存在 Vue 运行内存。
 - 完整连接默认遮罩，用户主动选择显示或复制时才使用明文。
-- 批量生成的 VLESS、VMess、SOCKS5 连接只在当前页面运行内存中使用并默认遮罩；不得重新生成或展示包含上游账号密码的原始 SOCKS URI。
+- 批量生成的 VLESS、VMess、SOCKS 连接，以及住宅场景可选的 `socks5` / `bitbrowser` 字段，只在当前页面运行内存中使用并默认遮罩；不得重新生成或展示包含上游账号密码的原始 SOCKS URI。
 - 退出、401 会话失效、关闭连接弹窗或页面卸载时清理内存敏感信息。
 - Toast 只提示复制成功，不回显复制内容。
 - 账号管理弹窗中的新密码只保存在 Vue 运行内存，提交成功或关闭弹窗时清空。
