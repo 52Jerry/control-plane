@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import javax.sql.DataSource;
@@ -23,13 +24,22 @@ import java.util.Map;
  * this guard keeps older installations usable while that tooling is pending.
  */
 @Component
+@ConditionalOnProperty(
+        prefix = "control-plane.schema",
+        name = "compatibility-migration-enabled",
+        havingValue = "true",
+        matchIfMissing = true)
 public class SchemaCompatibilityMigration {
 
     private static final Logger log = LoggerFactory.getLogger(SchemaCompatibilityMigration.class);
     private static final String ALLOCATION_TABLE = "residential_allocations";
     private static final String SOURCE_PORT_COLUMN = "proxy_source_port";
+    private static final String PROTOCOLS_ALL_COLUMN = "protocols_all_cipher";
     private static final String NODE_TABLE = "managed_nodes";
     private static final String SOCKS_INBOUND_PORT_COLUMN = "socks_inbound_port";
+    private static final String CONTROL_USER_TABLE = "control_users";
+    private static final String CONTROL_USER_ROLE_COLUMN = "role";
+    private static final String AUDIT_TABLE = "control_audit_logs";
 
     private final DataSource dataSource;
     private final JdbcTemplate jdbcTemplate;
@@ -48,9 +58,9 @@ public class SchemaCompatibilityMigration {
             }
 
             DatabaseMetaData metadata = connection.getMetaData();
-            if (!tableExists(metadata, ALLOCATION_TABLE)) {
-                return;
-            }
+            ensureControlUserRole(metadata);
+            ensureAuditTable(metadata);
+            if (!tableExists(metadata, ALLOCATION_TABLE)) return;
 
             dropLegacyGlobalUserIdUniqueIndex(metadata);
 
@@ -62,6 +72,11 @@ public class SchemaCompatibilityMigration {
                         + "ADD COLUMN proxy_source_port INT NULL "
                         + "AFTER proxy_source_ip");
                 log.info("Added missing compatibility column {}.{}", ALLOCATION_TABLE, SOURCE_PORT_COLUMN);
+            }
+            if (!columnExists(metadata, ALLOCATION_TABLE, PROTOCOLS_ALL_COLUMN)) {
+                jdbcTemplate.execute("ALTER TABLE residential_allocations "
+                        + "ADD COLUMN protocols_all_cipher LONGTEXT NULL");
+                log.info("Added missing compatibility column {}.{}", ALLOCATION_TABLE, PROTOCOLS_ALL_COLUMN);
             }
             if (tableExists(metadata, NODE_TABLE)
                     && !columnExists(metadata, NODE_TABLE, SOCKS_INBOUND_PORT_COLUMN)) {
@@ -91,6 +106,36 @@ public class SchemaCompatibilityMigration {
                     "无法补齐 Control Plane 数据库字段 residential_allocations.proxy_source_port",
                     exception);
         }
+    }
+
+    private void ensureControlUserRole(DatabaseMetaData metadata) {
+        try {
+            if (tableExists(metadata, CONTROL_USER_TABLE)
+                    && !columnExists(metadata, CONTROL_USER_TABLE, CONTROL_USER_ROLE_COLUMN)) {
+                jdbcTemplate.execute("ALTER TABLE control_users ADD COLUMN role VARCHAR(32) NOT NULL DEFAULT 'ADMIN'");
+                log.info("Added compatibility column {}.{}", CONTROL_USER_TABLE, CONTROL_USER_ROLE_COLUMN);
+            }
+        } catch (DataAccessException exception) {
+            if (!isDuplicateColumn(exception)) throw exception;
+        } catch (SQLException exception) {
+            throw new IllegalStateException("无法检查 control_users.role 字段", exception);
+        }
+    }
+
+    private void ensureAuditTable(DatabaseMetaData metadata) throws SQLException {
+        if (tableExists(metadata, AUDIT_TABLE)) return;
+        jdbcTemplate.execute("CREATE TABLE control_audit_logs ("
+                + "id BINARY(16) NOT NULL,"
+                + "event_type VARCHAR(64) NOT NULL,"
+                + "actor_user_id BINARY(16) NULL,"
+                + "actor_username VARCHAR(64) NULL,"
+                + "target_type VARCHAR(64) NULL,"
+                + "target_id VARCHAR(128) NULL,"
+                + "summary VARCHAR(500) NOT NULL,"
+                + "created_at TIMESTAMP(6) NOT NULL,"
+                + "PRIMARY KEY (id), INDEX idx_control_audit_created_at (created_at)"
+                + ")");
+        log.info("Created compatibility table {}", AUDIT_TABLE);
     }
 
     private boolean tableExists(DatabaseMetaData metadata, String tableName) throws SQLException {

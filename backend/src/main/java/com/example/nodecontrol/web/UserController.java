@@ -9,6 +9,7 @@ import com.example.nodecontrol.dto.RemoteModels.TrafficResponse;
 import com.example.nodecontrol.dto.RemoteModels.UserConnection;
 import com.example.nodecontrol.dto.RemoteModels.UserPage;
 import com.example.nodecontrol.service.NodeUserService;
+import com.example.nodecontrol.security.ControlSessionService;
 import jakarta.validation.Valid;
 import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
@@ -23,15 +24,18 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.RequestHeader;
 
 import java.util.UUID;
+import jakarta.servlet.http.HttpServletRequest;
 
 @RestController
 @RequestMapping("/api/control/nodes/{nodeId}")
 public class UserController {
 
     private final NodeUserService userService;
+    private final ControlSessionService sessionService;
 
-    public UserController(NodeUserService userService) {
+    public UserController(NodeUserService userService, ControlSessionService sessionService) {
         this.userService = userService;
+        this.sessionService = sessionService;
     }
 
     @GetMapping("/users")
@@ -48,9 +52,13 @@ public class UserController {
     public ResponseEntity<CreateUserResponse> createUser(
             @PathVariable UUID nodeId,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
-            @Valid @RequestBody CreateUserRequest request
+            @Valid @RequestBody CreateUserRequest request,
+            HttpServletRequest servletRequest
     ) {
-        return noStore(userService.createUser(nodeId, request, idempotencyKey));
+        UUID actor = actor(servletRequest);
+        return noStore(actor == null
+                ? userService.createUser(nodeId, request, idempotencyKey)
+                : userService.createUser(nodeId, request, idempotencyKey, actor));
     }
 
     @GetMapping("/users/{userId}/connections")
@@ -72,24 +80,36 @@ public class UserController {
     public OperationResponse bindProxy(
             @PathVariable UUID nodeId,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
-            @Valid @RequestBody BindProxyRequest request
+            @Valid @RequestBody BindProxyRequest request,
+            HttpServletRequest servletRequest
     ) {
-        return userService.bindProxy(nodeId, request, idempotencyKey);
+        UUID actor = actor(servletRequest);
+        return actor == null
+                ? userService.bindProxy(nodeId, request, idempotencyKey)
+                : userService.bindProxy(nodeId, request, idempotencyKey, actor);
     }
 
     @DeleteMapping("/users/{userId}")
     public OperationResponse deleteUser(
             @PathVariable UUID nodeId,
             @PathVariable String userId,
-            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            HttpServletRequest servletRequest
     ) {
-        return userService.deleteUser(nodeId, userId, idempotencyKey);
+        UUID actor = actor(servletRequest);
+        return actor == null
+                ? userService.deleteUser(nodeId, userId, idempotencyKey)
+                : userService.deleteUser(nodeId, userId, idempotencyKey, actor);
     }
 
     private <T> ResponseEntity<T> noStore(T body) {
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
                 .body(body);
+    }
+
+    private UUID actor(HttpServletRequest request) {
+        return sessionService.authenticatedSession(request).map(ControlSessionService.AuthenticatedSession::userId).orElse(null);
     }
 }
 

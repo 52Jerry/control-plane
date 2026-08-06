@@ -13,17 +13,21 @@ const nodes = ref([])
 const users = ref([])
 const userLoadError = ref('')
 const allocations = ref([])
+const allocationPage = reactive({ page: 1, pageSize: 20, total: 0, totalPages: 1 })
+const auditLogs = ref([])
+const auditPage = reactive({ page: 0, pageSize: 50, total: 0, totalPages: 1 })
 const controlAccounts = ref([])
 const activeView = ref('overview')
 const userPage = reactive({ page: 1, pageSize: 20, total: 0, keyword: '' })
 const selectedNodeId = ref(localStorage.getItem('selected-node-id') || '')
-const loading = reactive({ app: true, nodes: false, users: false, allocations: false, action: false })
+const loading = reactive({ app: true, nodes: false, users: false, allocations: false, audit: false, action: false })
 const modal = reactive({ login: false, accounts: false, node: false, installation: false, user: false, provision: false, connection: false, proxy: false, proxyDetails: false, settings: false })
 const toast = reactive({ visible: false, type: 'success', message: '' })
 const loginForm = reactive({ username: '', password: '' })
-const accountForm = reactive({ username: '', password: '' })
+const accountForm = reactive({ username: '', password: '', role: 'PROVISIONER' })
 const accountPasswordForm = reactive({ accountId: '', username: '', password: '' })
 const sessionUsername = ref('')
+const sessionRole = ref('')
 const loginConfigurationError = ref('')
 const connectionData = ref(null)
 const connectionUser = ref('')
@@ -64,12 +68,20 @@ const proxyForm = reactive({ userId: '', server: '', port: 1080, username: '', p
 
 const selectedNode = computed(() => nodes.value.find((node) => node.id === selectedNodeId.value) || null)
 const totalPages = computed(() => Math.max(1, Math.ceil(userPage.total / userPage.pageSize)))
+const effectiveRole = computed(() => meta.value.authRequired ? sessionRole.value : 'ADMIN')
+const canManageAccounts = computed(() => effectiveRole.value === 'ADMIN')
+const canViewAudit = computed(() => effectiveRole.value === 'ADMIN')
+const canOperateNodes = computed(() => ['ADMIN', 'NODE_OPS'].includes(effectiveRole.value))
+const canProvision = computed(() => ['ADMIN', 'NODE_OPS', 'PROVISIONER'].includes(effectiveRole.value))
+const canManageUsers = computed(() => ['ADMIN', 'PROVISIONER'].includes(effectiveRole.value))
+const canViewSensitive = computed(() => ['ADMIN', 'NODE_OPS', 'PROVISIONER'].includes(effectiveRole.value))
 const pageTitle = computed(() => ({
   overview: '总览',
   nodes: '受管节点',
   allocations: '自动生成记录',
   users: selectedNode.value ? `${selectedNode.value.name} · 节点用户` : '节点用户管理',
   'node-management': '节点管理',
+  audit: '审计日志',
 }[activeView.value] || '节点控制中心'))
 const allocatableNodes = computed(() => nodes.value.filter((node) => node.enabled && !node.maintenance && ['online', 'degraded'].includes(node.status) && node.userCount < node.maxUsers))
 const batchConnectionCount = computed(() => proxyBatchResults.value.reduce(
@@ -173,9 +185,11 @@ function clearBusinessData() {
   users.value = []
   userLoadError.value = ''
   allocations.value = []
+  auditLogs.value = []
   controlAccounts.value = []
   dashboard.value = { nodeCount: 0, onlineNodeCount: 0, degradedNodeCount: 0, userCount: 0, connections: 0, totalTraffic: 0 }
   userPage.total = 0
+  Object.assign(auditPage, { page: 0, total: 0, totalPages: 1 })
   clearConnectionDetails()
   closeProxyDetailsModal()
   clearBatchDetails()
@@ -311,14 +325,61 @@ async function loadUsers(resetPage = false) {
 async function loadAllocations() {
   loading.allocations = true
   try {
-    allocations.value = await api.allocations()
+    const data = await api.allocations({ page: allocationPage.page, pageSize: allocationPage.pageSize })
+    if (Array.isArray(data)) {
+      // Backward compatibility with an older Control Plane instance.
+      allocations.value = data
+      Object.assign(allocationPage, { total: data.length, totalPages: 1 })
+    } else {
+      allocations.value = data.items || []
+      Object.assign(allocationPage, {
+        page: data.page || allocationPage.page,
+        pageSize: data.pageSize || allocationPage.pageSize,
+        total: data.total || 0,
+        totalPages: Math.max(1, data.totalPages || 1),
+      })
+    }
   } finally {
     loading.allocations = false
   }
 }
 
+async function loadAuditLogs() {
+  if (!canViewAudit.value) {
+    auditLogs.value = []
+    Object.assign(auditPage, { page: 0, total: 0, totalPages: 1 })
+    return
+  }
+  loading.audit = true
+  try {
+    const data = await api.auditLogs({ page: auditPage.page, pageSize: auditPage.pageSize })
+    auditLogs.value = data.content || []
+    Object.assign(auditPage, {
+      page: Number.isInteger(data.number) ? data.number : auditPage.page,
+      total: data.totalElements || 0,
+      totalPages: Math.max(1, data.totalPages || 1),
+    })
+  } finally {
+    loading.audit = false
+  }
+}
+
+async function nextAuditPage(delta) {
+  const target = auditPage.page + delta
+  if (target < 0 || target >= auditPage.totalPages || loading.audit) return
+  auditPage.page = target
+  await loadAuditLogs()
+}
+
+async function nextAllocationPage(delta) {
+  const target = allocationPage.page + delta
+  if (target < 1 || target > allocationPage.totalPages || loading.allocations) return
+  allocationPage.page = target
+  await loadAllocations()
+}
+
 async function loadAll() {
-  await Promise.all([loadNodes(), loadAllocations()])
+  await Promise.all([loadNodes(), loadAllocations(), loadAuditLogs()])
   await loadUsers()
 }
 
@@ -336,7 +397,8 @@ async function bootstrap() {
         requireLogin()
         return
       }
-      sessionUsername.value = session.username || ''
+    sessionUsername.value = session.username || ''
+    sessionRole.value = session.role || 'ADMIN'
     }
     await loadAll()
   } catch (error) {
@@ -356,6 +418,7 @@ async function login() {
       password: loginForm.password,
     })
     sessionUsername.value = session.username || loginForm.username.trim()
+    sessionRole.value = session.role || 'ADMIN'
     loginForm.password = ''
     modal.login = false
     notify('登录成功')
@@ -383,6 +446,7 @@ async function logout() {
     if (error.status !== 401) notify(errorMessage(error), 'error')
   } finally {
     sessionUsername.value = ''
+    sessionRole.value = ''
     requireLogin()
     loading.action = false
   }
@@ -410,8 +474,9 @@ async function createControlAccount() {
     await api.createControlAccount({
       username: accountForm.username.trim(),
       password: accountForm.password,
+      role: accountForm.role,
     })
-    Object.assign(accountForm, { username: '', password: '' })
+    Object.assign(accountForm, { username: '', password: '', role: 'PROVISIONER' })
     await loadControlAccounts()
     notify('管理账号已创建')
   } catch (error) {
@@ -428,6 +493,20 @@ async function toggleControlAccount(account) {
     await api.updateControlAccount(account.id, { enabled: !account.enabled })
     await loadControlAccounts()
     notify(account.enabled ? '管理账号已停用，旧会话已失效' : '管理账号已启用')
+  } catch (error) {
+    notify(errorMessage(error), 'error')
+  } finally {
+    loading.action = false
+  }
+}
+
+async function changeControlAccountRole(account, role) {
+  if (!role || role === account.role) return
+  loading.action = true
+  try {
+    await api.updateControlAccount(account.id, { role })
+    await loadControlAccounts()
+    notify('账号角色已更新，旧会话已失效')
   } catch (error) {
     notify(errorMessage(error), 'error')
   } finally {
@@ -561,6 +640,17 @@ function socksUri(socks) {
 
 function connectionLinks(connection) {
   if (!connection) return []
+  const labels = {
+    socks5: 'SOCKS5 原始',
+    bitbrowser: 'BitBrowser',
+    vless: 'VLESS 加速',
+    socksAcceleration: 'SOCKS 加速',
+    vmess: 'VMess 加速',
+  }
+  const generated = Object.entries(connection.protocolsAll || {})
+    .filter(([, value]) => value)
+    .map(([key, value]) => ({ protocol: labels[key] || key, value }))
+  if (generated.length > 0) return generated
   return [
     connection.vless ? { protocol: 'VLESS', value: connection.vless } : null,
     connection.vmess ? { protocol: 'VMess', value: connection.vmess } : null,
@@ -936,10 +1026,11 @@ onBeforeUnmount(() => {
       </div>
 
       <button class="nav-item" :class="{ active: activeView === 'overview' }" @click="activeView = 'overview'"><Gauge :size="17" />总览</button>
-      <button class="nav-item" :class="{ active: activeView === 'nodes' }" @click="activeView = 'nodes'"><Server :size="17" />受管节点</button>
-      <button class="nav-item" :class="{ active: activeView === 'allocations' }" @click="activeView = 'allocations'"><Database :size="17" />自动生成记录</button>
-      <button class="nav-item" :class="{ active: activeView === 'users' }" @click="activeView = 'users'"><Users :size="17" />节点用户管理</button>
-      <button class="nav-item" :class="{ active: activeView === 'node-management' }" @click="activeView = 'node-management'"><Wrench :size="17" />节点管理</button>
+      <button v-if="canOperateNodes || effectiveRole === 'READONLY'" class="nav-item" :class="{ active: activeView === 'nodes' }" @click="activeView = 'nodes'"><Server :size="17" />受管节点</button>
+      <button v-if="canProvision || effectiveRole === 'READONLY'" class="nav-item" :class="{ active: activeView === 'allocations' }" @click="activeView = 'allocations'"><Database :size="17" />自动生成记录</button>
+      <button v-if="canProvision || effectiveRole === 'READONLY'" class="nav-item" :class="{ active: activeView === 'users' }" @click="activeView = 'users'"><Users :size="17" />节点用户管理</button>
+      <button v-if="canProvision" class="nav-item" :class="{ active: activeView === 'node-management' }" @click="activeView = 'node-management'"><Wrench :size="17" />节点管理</button>
+      <button v-if="canViewAudit" class="nav-item" :class="{ active: activeView === 'audit' }" @click="activeView = 'audit'"><Activity :size="17" />审计日志</button>
       <div class="nav-heading">已注册节点</div>
       <button
         v-for="node in nodes"
@@ -951,7 +1042,7 @@ onBeforeUnmount(() => {
         <span class="status-dot" :class="node.status"></span>
         <span><strong>{{ node.name }}</strong><small>{{ node.host || node.baseUrl }}</small></span>
       </button>
-      <button class="add-node-link" @click="activeView = 'node-management'; modal.node = true"><Plus :size="15" />添加节点</button>
+      <button v-if="canOperateNodes" class="add-node-link" @click="activeView = 'node-management'; modal.node = true"><Plus :size="15" />添加节点</button>
 
       <div class="sidebar-footer">
         <span>控制中心</span><strong>v{{ meta.version }}</strong>
@@ -965,10 +1056,10 @@ onBeforeUnmount(() => {
           <h1>{{ pageTitle }}</h1>
         </div>
         <div class="top-actions">
-          <button class="button ghost icon-text" :disabled="!selectedNode || loading.action" @click="refreshNode()"><RefreshCw :size="15" />刷新状态</button>
-          <button class="button secondary icon-text" :disabled="!selectedNode" @click="openCreateUser"><Users :size="15" />手动用户</button>
-          <button class="button primary icon-text" :disabled="allocatableNodes.length === 0" @click="openProvision"><Plus :size="16" />自动生成节点</button>
-          <button v-if="meta.passwordLoginEnabled" class="button ghost icon-text" :disabled="loading.action" @click="openAccountManagement"><UserCog :size="15" />账号管理</button>
+          <button v-if="canOperateNodes" class="button ghost icon-text" :disabled="!selectedNode || loading.action" @click="refreshNode()"><RefreshCw :size="15" />刷新状态</button>
+          <button v-if="canProvision" class="button secondary icon-text" :disabled="!selectedNode" @click="openCreateUser"><Users :size="15" />手动用户</button>
+          <button v-if="canProvision" class="button primary icon-text" :disabled="allocatableNodes.length === 0" @click="openProvision"><Plus :size="16" />自动生成节点</button>
+          <button v-if="meta.passwordLoginEnabled && canManageAccounts" class="button ghost icon-text" :disabled="loading.action" @click="openAccountManagement"><UserCog :size="15" />账号管理</button>
           <button v-if="meta.passwordLoginEnabled" class="button ghost icon-text" :disabled="loading.action" :title="sessionUsername || '退出管理端'" @click="logout"><LogOut :size="15" />退出</button>
         </div>
       </header>
@@ -994,7 +1085,7 @@ onBeforeUnmount(() => {
             <div><span>容量</span><strong>{{ selectedNode.userCount }} / {{ selectedNode.maxUsers }}</strong></div>
             <div><span>版本</span><strong>{{ selectedNode.managerVersion || '-' }}</strong></div>
           </div>
-          <div class="node-actions">
+          <div v-if="canOperateNodes" class="node-actions">
           <button class="icon-button" title="调度设置" @click="openNodeSettings"><Settings2 :size="16" /></button>
           <button class="icon-button" title="重载 sing-box" @click="reloadNode"><RotateCw :size="16" /></button>
           <button class="icon-button danger-text" title="移除节点" @click="removeNode(selectedNode)"><Trash2 :size="16" /></button>
@@ -1010,8 +1101,8 @@ onBeforeUnmount(() => {
         <div class="panel-heading proxy-batch-heading">
           <div><p class="eyebrow">批量 SOCKS 节点生成</p><h2>节点信息输入</h2></div>
           <div class="batch-actions">
-            <button class="button ghost icon-text" :disabled="batchConnectionCount === 0" @click="copyAllBatchLinks"><Copy :size="14" />复制所有链接</button>
-            <button class="button primary icon-text" :disabled="loading.action" @click="provisionProxyBatch"><Link :size="15" />生成三协议节点</button>
+            <button v-if="canProvision" class="button ghost icon-text" :disabled="batchConnectionCount === 0" @click="copyAllBatchLinks"><Copy :size="14" />复制所有链接</button>
+            <button v-if="canProvision" class="button primary icon-text" :disabled="loading.action" @click="provisionProxyBatch"><Link :size="15" />生成三协议节点</button>
           </div>
         </div>
         <div class="proxy-batch-body">
@@ -1081,7 +1172,7 @@ onBeforeUnmount(() => {
       <section v-if="activeView === 'allocations'" class="panel allocation-panel">
         <div class="panel-heading">
           <div><p class="eyebrow">直出节点生成</p><h2>自动生成记录</h2></div>
-          <button class="button primary icon-text" :disabled="allocatableNodes.length === 0" @click="openProvision"><Plus :size="15" />生成直出节点</button>
+          <button v-if="canProvision" class="button primary icon-text" :disabled="allocatableNodes.length === 0" @click="openProvision"><Plus :size="15" />生成直出节点</button>
         </div>
         <div class="table-wrap">
           <table class="allocation-table">
@@ -1095,10 +1186,41 @@ onBeforeUnmount(() => {
                 <td><strong>{{ allocation.nodeName || '-' }}</strong><small class="table-subtext">{{ allocation.nodeHost || '等待节点' }}</small></td>
                 <td><button v-if="allocation.provisioningMode === 'UPSTREAM_SOCKS'" class="link-button" @click="showAllocationProxy(allocation)">上游 SOCKS</button><strong v-else>VPS 直出</strong><small class="table-subtext">{{ allocation.provisioningMode === 'UPSTREAM_SOCKS' ? `${allocation.proxyServer || '-'}:${allocation.proxyPort || '-'}` : (allocation.nodeHost || '等待选择节点') }}</small></td>
                 <td>{{ formatDate(allocation.createdAt) }}</td>
-                <td><div class="row-actions"><button v-if="allocation.state === 'ACTIVE'" class="icon-action" title="查看连接" @click="showAllocationConnection(allocation)"><Link :size="14" />连接</button><button v-if="['RETRYABLE','FAILED','PENDING'].includes(allocation.state)" class="icon-action" :disabled="loading.action" title="重新开通" @click="retryAllocation(allocation)"><RefreshCw :size="14" />重试</button></div></td>
+                <td><div class="row-actions"><button v-if="allocation.state === 'ACTIVE' && canViewSensitive" class="icon-action" title="查看连接" @click="showAllocationConnection(allocation)"><Link :size="14" />连接</button><button v-if="['RETRYABLE','FAILED','PENDING'].includes(allocation.state) && canProvision" class="icon-action" :disabled="loading.action" title="重新开通" @click="retryAllocation(allocation)"><RefreshCw :size="14" />重试</button></div></td>
               </tr>
             </tbody>
           </table>
+        </div>
+        <div class="pagination">
+          <span>共 {{ allocationPage.total }} 条记录</span>
+          <div><button :disabled="allocationPage.page <= 1 || loading.allocations" @click="nextAllocationPage(-1)">上一页</button><strong>{{ allocationPage.page }} / {{ allocationPage.totalPages }}</strong><button :disabled="allocationPage.page >= allocationPage.totalPages || loading.allocations" @click="nextAllocationPage(1)">下一页</button></div>
+        </div>
+      </section>
+
+      <section v-if="activeView === 'audit' && canViewAudit" class="panel allocation-panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">安全审计</p><h2>操作日志</h2></div>
+          <button class="button ghost icon-text" :disabled="loading.audit" @click="loadAuditLogs"><RefreshCw :size="14" />刷新</button>
+        </div>
+        <div class="table-wrap">
+          <table class="allocation-table">
+            <thead><tr><th>时间</th><th>事件</th><th>操作者</th><th>目标</th><th>摘要</th></tr></thead>
+            <tbody>
+              <tr v-if="loading.audit"><td colspan="5" class="empty-state">正在加载审计日志…</td></tr>
+              <tr v-else-if="auditLogs.length === 0"><td colspan="5" class="empty-state">暂无审计记录</td></tr>
+              <tr v-for="log in auditLogs" :key="log.id">
+                <td>{{ formatDate(log.createdAt) }}</td>
+                <td><span class="protocol-tag">{{ log.eventType }}</span></td>
+                <td>{{ log.actorUsername || '兼容令牌/系统' }}</td>
+                <td>{{ log.targetType || '-' }}<small class="table-subtext">{{ log.targetId || '-' }}</small></td>
+                <td>{{ log.summary || '-' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="pagination">
+          <span>共 {{ auditPage.total }} 条记录</span>
+          <div><button :disabled="auditPage.page <= 0 || loading.audit" @click="nextAuditPage(-1)">上一页</button><strong>{{ auditPage.page + 1 }} / {{ auditPage.totalPages }}</strong><button :disabled="auditPage.page + 1 >= auditPage.totalPages || loading.audit" @click="nextAuditPage(1)">下一页</button></div>
         </div>
       </section>
 
@@ -1126,7 +1248,7 @@ onBeforeUnmount(() => {
                 <td><span :class="user.proxyBound ? 'positive' : 'muted'">{{ user.proxyBound ? user.proxyServer : '直连出口' }}</span></td>
                 <td><strong>{{ formatBytes(user.total) }}</strong><small class="traffic-split">↑ {{ formatBytes(user.upload) }} / ↓ {{ formatBytes(user.download) }}</small></td>
                 <td>{{ formatDate(user.createdAt) }}</td>
-                <td><div class="row-actions"><button @click="showConnections(user)">连接</button><button @click="openProxy(user)">代理</button><button class="danger-text" @click="deleteUser(user)">删除</button></div></td>
+                <td><div class="row-actions"><button v-if="canViewSensitive" @click="showConnections(user)">连接</button><button v-if="canManageUsers" @click="openProxy(user)">代理</button><button v-if="canManageUsers" class="danger-text" @click="deleteUser(user)">删除</button></div></td>
               </tr>
             </tbody>
           </table>
@@ -1141,8 +1263,8 @@ onBeforeUnmount(() => {
         <div class="section-title">
           <div><p class="eyebrow">节点注册管理</p><h2>全部节点</h2></div>
           <div class="node-list-actions">
-            <button class="button primary icon-text" :disabled="loading.action" @click="openNodeInstallation"><Server :size="14" />一键安装 Node Manager</button>
-            <button class="button ghost icon-text" @click="modal.node = true"><Plus :size="14" />手动添加节点</button>
+            <button v-if="canOperateNodes" class="button primary icon-text" :disabled="loading.action" @click="openNodeInstallation"><Server :size="14" />一键安装 Node Manager</button>
+            <button v-if="canOperateNodes" class="button ghost icon-text" @click="modal.node = true"><Plus :size="14" />手动添加节点</button>
           </div>
         </div>
         <div class="node-grid">
@@ -1151,7 +1273,7 @@ onBeforeUnmount(() => {
             <p>{{ node.baseUrl }}</p>
             <dl><div><dt>状态</dt><dd>{{ node.maintenance ? '维护' : (node.enabled ? statusText(node.status) : '停用') }}</dd></div><div><dt>容量</dt><dd>{{ node.userCount }} / {{ node.maxUsers }}</dd></div><div><dt>流量</dt><dd>{{ formatBytes(node.totalTraffic) }}</dd></div></dl>
           </article>
-          <button v-if="nodes.length === 0" class="empty-node" @click="modal.node = true"><Plus :size="18" />注册第一个节点管理器</button>
+          <button v-if="nodes.length === 0 && canOperateNodes" class="empty-node" @click="modal.node = true"><Plus :size="18" />注册第一个节点管理器</button>
         </div>
       </section>
     </main>
@@ -1169,11 +1291,12 @@ onBeforeUnmount(() => {
     <div v-if="modal.accounts" class="modal-backdrop" @mousedown.self="closeAccountModal">
       <div class="modal-card accounts-card">
         <div class="modal-heading"><div><p class="eyebrow">管理账号</p><h2>账号与权限管理</h2></div><button class="close-button" title="关闭" @click="closeAccountModal"><X :size="17" /></button></div>
-        <p class="form-note account-note">所有启用账号都拥有与当前账号相同的控制中心操作权限。密码仅用于本次请求，不会写入浏览器存储。</p>
+        <p class="form-note account-note">账号按角色分配权限。密码仅用于本次请求，不会写入浏览器存储。</p>
 
         <form class="account-create-form" @submit.prevent="createControlAccount">
           <label>新账号<input v-model.trim="accountForm.username" required minlength="3" maxlength="64" pattern="[A-Za-z0-9._-]+" autocomplete="off" placeholder="请输入管理账号" /></label>
           <label>初始密码<input v-model="accountForm.password" required type="password" minlength="10" maxlength="128" autocomplete="new-password" placeholder="至少 10 位" /></label>
+          <label>角色<select v-model="accountForm.role"><option value="PROVISIONER">节点开通</option><option value="NODE_OPS">节点运维</option><option value="READONLY">只读</option><option value="ADMIN">管理员</option></select></label>
           <button class="button primary icon-text" :disabled="loading.action"><Plus :size="15" />创建账号</button>
         </form>
 
@@ -1181,10 +1304,11 @@ onBeforeUnmount(() => {
           <article v-for="account in controlAccounts" :key="account.id" class="account-row">
             <div class="account-identity">
               <div class="avatar"><UserCog :size="15" /></div>
-              <div><strong>{{ account.username }}</strong><span>{{ account.current ? '当前账号' : (account.enabled ? '可登录' : '已停用') }}</span></div>
+              <div><strong>{{ account.username }}</strong><span>{{ account.current ? '当前账号' : (account.enabled ? '可登录' : '已停用') }} · {{ ({ ADMIN: '管理员', NODE_OPS: '节点运维', PROVISIONER: '节点开通', READONLY: '只读' }[account.role] || account.role || '管理员') }}</span></div>
             </div>
             <div class="account-meta"><span>最后登录</span><strong>{{ formatDate(account.lastLoginAt) }}</strong></div>
             <div class="account-actions">
+              <select :value="account.role || 'ADMIN'" :disabled="loading.action" @change="changeControlAccountRole(account, $event.target.value)"><option value="ADMIN">管理员</option><option value="NODE_OPS">节点运维</option><option value="PROVISIONER">节点开通</option><option value="READONLY">只读</option></select>
               <button class="button ghost" :disabled="loading.action" @click="beginResetAccountPassword(account)">重置密码</button>
               <button class="button ghost" :disabled="loading.action || account.current" @click="toggleControlAccount(account)">{{ account.enabled ? '停用' : '启用' }}</button>
               <button class="icon-button danger-text" title="删除账号" :disabled="loading.action || account.current" @click="deleteControlAccount(account)"><Trash2 :size="14" /></button>
@@ -1290,9 +1414,12 @@ onBeforeUnmount(() => {
         <div v-if="connectionContext" class="connection-context"><span><Server :size="13" />{{ connectionContext.nodeName }} · {{ connectionContext.nodeHost }}</span><span><ShieldCheck :size="13" />{{ connectionData?.proxyBound ? '已绑定上游代理' : 'VPS 直出，未绑定上游代理' }}</span></div>
         <label class="reveal-toggle connection-reveal"><input v-model="revealConnectionSecrets" type="checkbox" /><component :is="revealConnectionSecrets ? EyeOff : Eye" :size="14" /><span>{{ revealConnectionSecrets ? '隐藏完整连接' : '显示完整连接' }}</span></label>
         <div v-if="connectionData" class="connection-list">
-          <div v-if="connectionData.vless"><span>VLESS</span><code>{{ revealConnectionSecrets ? connectionData.vless : maskedLink(connectionData.vless) }}</code><button title="复制 VLESS" @click="copy(connectionData.vless)"><Copy :size="14" /></button></div>
-          <div v-if="connectionData.vmess"><span>VMess</span><code>{{ revealConnectionSecrets ? connectionData.vmess : maskedLink(connectionData.vmess) }}</code><button title="复制 VMess" @click="copy(connectionData.vmess)"><Copy :size="14" /></button></div>
-          <div v-if="connectionData.socks"><span>SOCKS5</span><code>{{ revealConnectionSecrets ? socksUri(connectionData.socks) : maskedLink(socksUri(connectionData.socks)) }}</code><button title="复制 SOCKS5" @click="copy(socksUri(connectionData.socks))"><Clipboard :size="14" /></button></div>
+          <div v-for="link in connectionLinks(connectionData)" :key="`${link.protocol}-${link.value}`">
+            <span>{{ link.protocol }}</span>
+            <code>{{ revealConnectionSecrets ? link.value : maskedLink(link.value) }}</code>
+            <button :title="`复制 ${link.protocol}`" @click="copy(link.value)"><Copy :size="14" /></button>
+          </div>
+          <p v-if="connectionLinks(connectionData).length === 0" class="empty-state">暂无可用连接</p>
         </div>
       </div>
     </div>

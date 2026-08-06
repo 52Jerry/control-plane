@@ -183,6 +183,8 @@ public class ControlPlaneProperties {
     public static class Provisioning {
         private int defaultMaxUsers = 500;
         private long operationStaleAfterMs = 120000;
+        /** Whether residential allocations must include all five generated links. */
+        private boolean requireCompleteProtocolsAll = false;
 
         public int getDefaultMaxUsers() {
             return defaultMaxUsers;
@@ -198,6 +200,14 @@ public class ControlPlaneProperties {
 
         public void setOperationStaleAfterMs(long operationStaleAfterMs) {
             this.operationStaleAfterMs = operationStaleAfterMs;
+        }
+
+        public boolean isRequireCompleteProtocolsAll() {
+            return requireCompleteProtocolsAll;
+        }
+
+        public void setRequireCompleteProtocolsAll(boolean requireCompleteProtocolsAll) {
+            this.requireCompleteProtocolsAll = requireCompleteProtocolsAll;
         }
     }
 

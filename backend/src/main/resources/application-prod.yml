@@ -28,8 +28,9 @@ spring:
 
   jpa:
     hibernate:
-      # 生产环境允许 Hibernate 对现有表进行增量更新。
-      ddl-auto: update
+      # 生产环境只校验已版本化/兼容迁移后的结构，不让 Hibernate
+      # 在启动时隐式创建、修改或删除业务表。
+      ddl-auto: validate
     show-sql: false
     open-in-view: false
     properties:
@@ -52,11 +53,21 @@ control-plane:
   bootstrap:
     enabled: false
 
+  schema:
+    # 生产发布前由受控迁移脚本准备结构，应用启动不自动 ALTER TABLE。
+    compatibility-migration-enabled: false
+
   security:
     registration-token: ${CONTROL_PLANE_REGISTRATION_TOKEN:}
     encryption-key: ${CONTROL_PLANE_ENCRYPTION_KEY}
     login-username: ${CONTROL_PLANE_LOGIN_USERNAME:}
     login-password: ${CONTROL_PLANE_LOGIN_PASSWORD:}
+
+  provisioning:
+    default-max-users: ${NODE_DEFAULT_MAX_USERS:500}
+    operation-stale-after-ms: ${PROVISIONING_OPERATION_STALE_AFTER_MS:120000}
+    # 生产默认要求新版 Node Manager 返回完整五协议。
+    require-complete-protocols-all: ${CONTROL_PLANE_REQUIRE_COMPLETE_PROTOCOLS_ALL:true}
 
   installation:
     token-ttl-seconds: ${CONTROL_PLANE_INSTALL_TOKEN_TTL_SECONDS:600}

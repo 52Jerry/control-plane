@@ -118,7 +118,7 @@ public class ControlSessionService {
             return userRepository.findById(userId)
                     .filter(ControlUser::isEnabled)
                     .filter(user -> user.getSessionVersion() == sessionVersion)
-                    .map(user -> new AuthenticatedSession(user.getId(), user.getUsername()));
+                    .map(user -> new AuthenticatedSession(user.getId(), user.getUsername(), user.getRole()));
         } catch (IllegalArgumentException exception) {
             return Optional.empty();
         }
@@ -145,6 +145,6 @@ public class ControlSessionService {
                 supplied.getBytes(StandardCharsets.UTF_8));
     }
 
-    public record AuthenticatedSession(UUID userId, String username) {
+    public record AuthenticatedSession(UUID userId, String username, String role) {
     }
 }

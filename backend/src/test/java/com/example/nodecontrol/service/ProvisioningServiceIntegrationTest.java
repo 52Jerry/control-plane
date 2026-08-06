@@ -2,12 +2,14 @@ package com.example.nodecontrol.service;
 
 import com.example.nodecontrol.client.NodeManagerClient;
 import com.example.nodecontrol.client.RemoteNodeException;
+import com.example.nodecontrol.config.ControlPlaneProperties;
 import com.example.nodecontrol.domain.ManagedNode;
 import com.example.nodecontrol.domain.ManagedNodeRepository;
 import com.example.nodecontrol.domain.ResidentialAllocation;
 import com.example.nodecontrol.domain.ResidentialAllocationRepository;
 import com.example.nodecontrol.dto.ControlPlaneModels.ProvisionRequest;
 import com.example.nodecontrol.dto.ControlPlaneModels.ProxyProvisionRequest;
+import com.example.nodecontrol.dto.ControlPlaneModels.AllocationView;
 import com.example.nodecontrol.dto.RemoteModels.AgentHeartbeat;
 import com.example.nodecontrol.dto.RemoteModels.AgentInfo;
 import com.example.nodecontrol.dto.RemoteModels.CreateUserRequest;
@@ -27,6 +29,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -62,6 +65,9 @@ class ProvisioningServiceIntegrationTest {
 
     @Autowired
     private SecretCipher secretCipher;
+
+    @Autowired
+    private ControlPlaneProperties controlPlaneProperties;
 
     @MockitoBean
     private NodeManagerClient nodeManagerClient;
@@ -167,6 +173,72 @@ class ProvisioningServiceIntegrationTest {
         ArgumentCaptor<CreateUserRequest> requestCaptor = ArgumentCaptor.forClass(CreateUserRequest.class);
         verify(nodeManagerClient, times(1)).createUser(any(), requestCaptor.capture(), any());
         assertDirectRequest(requestCaptor.getValue());
+    }
+
+    @Test
+    void allocationListSupportsPagingWithoutDecryptingConnections() {
+        saveOnlineNode("node-page", 10);
+        when(nodeManagerClient.createUser(any(), any(), any())).thenAnswer(invocation ->
+                successResponse(invocation.<CreateUserRequest>getArgument(1).userId()));
+
+        provisioningService.provision("page-1", new ProvisionRequest(
+                "page-user-1", List.of("socks"), null));
+        provisioningService.provision("page-2", new ProvisionRequest(
+                "page-user-2", List.of("socks"), null));
+
+        var firstPage = provisioningService.listAllocations(1, 1);
+        assertThat(firstPage.page()).isEqualTo(1);
+        assertThat(firstPage.pageSize()).isEqualTo(1);
+        assertThat(firstPage.total()).isEqualTo(2);
+        assertThat(firstPage.totalPages()).isEqualTo(2);
+        assertThat(firstPage.items()).hasSize(1);
+        assertThat(firstPage.items().getFirst().connection()).isNull();
+
+        var secondPage = provisioningService.listAllocations(2, 1);
+        assertThat(secondPage.items()).hasSize(1);
+        assertThat(secondPage.items().getFirst().id()).isNotEqualTo(firstPage.items().getFirst().id());
+    }
+
+    @Test
+    void persistsFiveProtocolLinksEncryptedAndOnlyReturnsThemForDetailViews() {
+        saveOnlineNode("node-protocols-all", 10);
+        Map<String, String> protocolsAll = Map.of(
+                "socks5", "socks://generated-socks",
+                "bitbrowser", "198.51.100.10:5001:user:password",
+                "vless", "vless://generated-vless",
+                "socksAcceleration", "socks://accelerated",
+                "vmess", "vmess://generated-vmess");
+        when(nodeManagerClient.createUser(any(), any(), any())).thenReturn(
+                new CreateUserResponse(
+                        true,
+                        "protocol-user",
+                        UUID.randomUUID().toString(),
+                        List.of("vless", "vmess", "socks"),
+                        "vless://legacy",
+                        "vmess://legacy",
+                        new SocksConnection("203.0.113.10", 5001, "protocol-user", "node-password"),
+                        true,
+                        protocolsAll));
+
+        AllocationView created = provisioningService.provisionProxyBatch(
+                "batch-protocols-all",
+                new ProxyProvisionRequest(
+                        "198.51.100.10 edge.example 1080 protocol-user upstream-password",
+                        List.of("socks"), null, "protocols-all"))
+                .results().getFirst().allocation();
+
+        assertThat(created.connection().protocolsAll()).containsAllEntriesOf(protocolsAll);
+        ResidentialAllocation stored = allocationRepository.findAll().getFirst();
+        assertThat(stored.getProtocolsAllCipher()).startsWith("enc:v1:");
+        assertThat(stored.getProtocolsAllCipher()).doesNotContain("generated-vless");
+        assertThat(stored.getProtocolsAllCipher()).doesNotContain("upstream-password");
+
+        AllocationView listed = provisioningService.listAllocations().getFirst();
+        assertThat(listed.connection()).isNull();
+        assertThat(listed.protocolsAll()).isEmpty();
+
+        AllocationView detailed = provisioningService.getAllocation(created.id());
+        assertThat(detailed.connection().protocolsAll()).containsAllEntriesOf(protocolsAll);
     }
 
     @Test
@@ -434,6 +506,30 @@ class ProvisioningServiceIntegrationTest {
                 .doesNotContain("test-user")
                 .doesNotContain("test-password");
         assertThat(allocationRepository.findAll().getFirst().getState()).isEqualTo("RETRYABLE");
+    }
+
+    @Test
+    void strictProtocolModeRejectsLegacyThreeProtocolNodeManagerResponse() {
+        saveOnlineNode("node-strict-protocols", 10);
+        when(nodeManagerClient.createUser(any(), any(), any()))
+                .thenReturn(residentialSuccessResponse("strict-protocol-user"));
+
+        controlPlaneProperties.getProvisioning().setRequireCompleteProtocolsAll(true);
+        try {
+            var response = provisioningService.provisionProxyBatch(
+                    "batch-strict-protocols",
+                    new ProxyProvisionRequest(
+                            "198.51.100.20 203.0.113.20 1080 strict-protocol-user test-password",
+                            List.of("socks"), null, "strict"));
+
+            assertThat(response.succeeded()).isZero();
+            assertThat(response.failed()).isEqualTo(1);
+            assertThat(response.results().getFirst().error())
+                    .contains("完整的五协议")
+                    .doesNotContain("test-password");
+        } finally {
+            controlPlaneProperties.getProvisioning().setRequireCompleteProtocolsAll(false);
+        }
     }
 
     @Test

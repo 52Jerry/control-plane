@@ -10,6 +10,7 @@ import jakarta.validation.constraints.Size;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 public final class ControlPlaneModels {
@@ -32,7 +33,10 @@ public final class ControlPlaneModels {
     ) {
     }
 
-    public record SessionResponse(boolean authenticated, String username) {
+    public record SessionResponse(boolean authenticated, String username, String role) {
+        public SessionResponse(boolean authenticated, String username) {
+            this(authenticated, username, null);
+        }
     }
 
     public record CreateControlUserRequest(
@@ -40,13 +44,27 @@ public final class ControlPlaneModels {
             @Size(min = 3, max = 64, message = "账号长度必须为 3-64 位")
             @Pattern(regexp = "^[A-Za-z0-9._-]+$", message = "账号只能包含字母、数字、点、下划线和短横线") String username,
             @NotBlank(message = "密码不能为空")
-            @Size(min = 10, max = 128, message = "密码长度必须为 10-128 位") String password
+            @Size(min = 10, max = 128, message = "密码长度必须为 10-128 位") String password,
+            @Pattern(regexp = "ADMIN|NODE_OPS|PROVISIONER|READONLY", message = "账号角色不受支持") String role
     ) {
+        public CreateControlUserRequest(String username, String password) {
+            this(username, password, "ADMIN");
+        }
     }
 
     public record UpdateControlUserRequest(
             Boolean enabled,
-            @Size(min = 10, max = 128, message = "密码长度必须为 10-128 位") String password
+            @Size(min = 10, max = 128, message = "密码长度必须为 10-128 位") String password,
+            @Pattern(regexp = "ADMIN|NODE_OPS|PROVISIONER|READONLY", message = "账号角色不受支持") String role
+    ) {
+        public UpdateControlUserRequest(Boolean enabled, String password) {
+            this(enabled, password, null);
+        }
+    }
+
+    public record UpdateControlUserRoleRequest(
+            @NotBlank(message = "角色不能为空")
+            @Pattern(regexp = "ADMIN|NODE_OPS|PROVISIONER|READONLY", message = "账号角色不受支持") String role
     ) {
     }
 
@@ -55,9 +73,22 @@ public final class ControlPlaneModels {
             String username,
             boolean enabled,
             boolean current,
+            String role,
             Instant createdAt,
             Instant updatedAt,
             Instant lastLoginAt
+    ) {
+    }
+
+    public record AuditLogView(
+            UUID id,
+            String eventType,
+            UUID actorUserId,
+            String actorUsername,
+            String targetType,
+            String targetId,
+            String summary,
+            Instant createdAt
     ) {
     }
 
@@ -176,10 +207,7 @@ public final class ControlPlaneModels {
             List<String> protocols,
             UUID preferredNodeId
     ) {
-        /**
-         * Compatibility constructor for clients compiled against the previous
-         * prefix-based request contract. The prefix is intentionally ignored.
-         */
+        /** Compatibility constructor for clients compiled against the previous prefix-based contract. */
         public ProxyProvisionRequest(String input, List<String> protocols,
                                       UUID preferredNodeId, String ignoredUserPrefix) {
             this(input, protocols, preferredNodeId);
@@ -208,6 +236,16 @@ public final class ControlPlaneModels {
     ) {
     }
 
+    /** Paged allocation list; the controller preserves the legacy array response when paging is omitted. */
+    public record AllocationPageResponse(
+            List<AllocationView> items,
+            int page,
+            int pageSize,
+            long total,
+            int totalPages
+    ) {
+    }
+
     public record AllocationView(
             UUID id,
             String requestKey,
@@ -218,6 +256,7 @@ public final class ControlPlaneModels {
             String nodeName,
             String nodeHost,
             UserConnection connection,
+            Map<String, String> protocolsAll,
             String lastError,
             Instant createdAt,
             Instant updatedAt,
@@ -246,7 +285,7 @@ public final class ControlPlaneModels {
                               Instant updatedAt,
                               Instant completedAt) {
             this(id, requestKey, userId, protocols, state, nodeId, nodeName, nodeHost,
-                    connection, lastError, createdAt, updatedAt, completedAt,
+                    connection, Map.of(), lastError, createdAt, updatedAt, completedAt,
                     "DIRECT", false, null, null, null, null, null, null, null);
         }
 
@@ -268,8 +307,12 @@ public final class ControlPlaneModels {
                               String proxyServer,
                               Integer proxyPort) {
             this(id, requestKey, userId, protocols, state, nodeId, nodeName, nodeHost,
-                    connection, lastError, createdAt, updatedAt, completedAt,
+                    connection, Map.of(), lastError, createdAt, updatedAt, completedAt,
                     provisioningMode, proxyBound, proxyServer, proxyPort, null, null, null, null, null);
+        }
+
+        public AllocationView {
+            protocolsAll = protocolsAll == null ? Map.of() : Map.copyOf(protocolsAll);
         }
     }
 }

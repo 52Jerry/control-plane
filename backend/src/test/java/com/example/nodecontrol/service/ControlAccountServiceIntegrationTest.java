@@ -80,6 +80,19 @@ class ControlAccountServiceIntegrationTest {
     }
 
     @Test
+    void storesRoleAndRoleChangeRevokesExistingSession() {
+        var created = accountService.create(
+                new CreateControlUserRequest("readonly.one", "operator-password", "READONLY"),
+                initialAdmin.getId());
+        assertThat(created.role()).isEqualTo("READONLY");
+        ControlUser user = repository.findById(created.id()).orElseThrow();
+        String session = sessionService.createSessionToken(user);
+        accountService.update(user.getId(), new UpdateControlUserRequest(null, null, "NODE_OPS"), initialAdmin.getId());
+        assertThat(repository.findById(user.getId()).orElseThrow().getRole()).isEqualTo("NODE_OPS");
+        assertThat(sessionService.hasValidSession(requestWithSession(session))).isFalse();
+    }
+
+    @Test
     void passwordResetAndDisableRevokeExistingCookies() {
         var created = accountService.create(
                 new CreateControlUserRequest("operator.two", "operator-password"),

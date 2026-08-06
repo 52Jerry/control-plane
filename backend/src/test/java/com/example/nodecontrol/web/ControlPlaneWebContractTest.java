@@ -220,6 +220,28 @@ class ControlPlaneWebContractTest {
     }
 
     @Test
+    void allocationPagingReturnsMetadataWhenRequested() throws Exception {
+        AllocationView allocation = new AllocationView(
+                UUID.randomUUID(), "request-page", "page-user", List.of("socks"), "PENDING",
+                null, null, null, null, null, Instant.now(), Instant.now(), null);
+        when(provisioningService.listAllocations(1, 20))
+                .thenReturn(new com.example.nodecontrol.dto.ControlPlaneModels.AllocationPageResponse(
+                        List.of(allocation), 1, 20, 1, 1));
+
+        mockMvc.perform(get("/api/control/allocations")
+                        .param("page", "1")
+                        .param("pageSize", "20")
+                        .header("X-Control-Token", "admin-secret"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.items[0].userId").value("page-user"))
+                .andExpect(jsonPath("$.page").value(1))
+                .andExpect(jsonPath("$.pageSize").value(20))
+                .andExpect(jsonPath("$.total").value(1))
+                .andExpect(jsonPath("$.totalPages").value(1));
+    }
+
+    @Test
     void connectionSecretsAreOnlyReturnedBySingleAllocationEndpoint() throws Exception {
         UUID id = UUID.randomUUID();
         UserConnection connection = new UserConnection(
@@ -394,6 +416,72 @@ class ControlPlaneWebContractTest {
                 .andExpect(jsonPath("$.total").value(1));
     }
 
+    @Test
+    void readonlyCannotWriteNodesOrReadConnectionSecrets() throws Exception {
+        Cookie readonly = createRoleAccount("READONLY");
+        mockMvc.perform(get("/api/control/nodes").cookie(readonly))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/control/nodes")
+                        .cookie(readonly)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"read-only-node","baseUrl":"http://127.0.0.1:8088","token":"node-token","maxUsers":10}
+                                """))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/control/nodes/{nodeId}/users/{userId}/proxy",
+                        UUID.randomUUID(), "user-1").cookie(readonly))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void provisionerMayProvisionButCannotRegisterNode() throws Exception {
+        Cookie provisioner = createRoleAccount("PROVISIONER");
+        ProxyProvisionBatchResponse response = new ProxyProvisionBatchResponse(0, 0, 0, List.of());
+        when(provisioningService.provisionProxyBatch(any(), any(), any())).thenReturn(response);
+        mockMvc.perform(post("/api/control/allocations/proxy-provisions")
+                        .cookie(provisioner)
+                        .header("Idempotency-Key", "provisioner-rbac")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"input":"198.51.100.10 example.test 1080 test-user test-secret","protocols":["socks"]}
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.total").value(0));
+        mockMvc.perform(post("/api/control/nodes")
+                        .cookie(provisioner)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"provisioner-node","baseUrl":"http://127.0.0.1:8088","token":"node-token","maxUsers":10}
+                                """))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void nodeOpsMayIssueInstallCommandButCannotCreateNodeUser() throws Exception {
+        Cookie nodeOps = createRoleAccount("NODE_OPS");
+        mockMvc.perform(post("/api/control/node-installation").cookie(nodeOps))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.command").exists());
+        mockMvc.perform(post("/api/control/nodes/{nodeId}/users", UUID.randomUUID())
+                        .cookie(nodeOps)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"userId":"node-user","protocols":["socks"]}
+                                """))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void auditLogEndpointIsAdminOnly() throws Exception {
+        Cookie nodeOps = createRoleAccount("NODE_OPS");
+        mockMvc.perform(get("/api/control/audit-logs").cookie(nodeOps))
+                .andExpect(status().isForbidden());
+        Cookie admin = loginCookie("control-admin", "login-secret");
+        mockMvc.perform(get("/api/control/audit-logs").cookie(admin))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"));
+    }
+
     private Cookie sessionCookie(MvcResult login) {
         String setCookie = login.getResponse().getHeader("Set-Cookie");
         assertThat(setCookie).isNotBlank();
@@ -426,5 +514,18 @@ class ControlPlaneWebContractTest {
                 .andExpect(header().string("Cache-Control", "no-store"))
                 .andReturn();
         return sessionCookie(login);
+    }
+
+    private Cookie createRoleAccount(String role) throws Exception {
+        String username = "rbac-" + role.toLowerCase() + "-" + UUID.randomUUID().toString().substring(0, 8);
+        Cookie admin = loginCookie("control-admin", "login-secret");
+        mockMvc.perform(post("/api/control/accounts")
+                        .cookie(admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"" + username
+                                + "\",\"password\":\"rbac-password-123\",\"role\":\"" + role + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.role").value(role));
+        return loginCookie(username, "rbac-password-123");
     }
 }

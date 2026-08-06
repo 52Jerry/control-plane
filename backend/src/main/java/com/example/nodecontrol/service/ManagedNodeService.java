@@ -43,17 +43,29 @@ public class ManagedNodeService {
     private final NodeManagerClient client;
     private final ControlPlaneProperties properties;
     private final SecretCipher secretCipher;
+    private final AuditLogService auditLogService;
 
     public ManagedNodeService(ManagedNodeRepository repository,
                               ResidentialAllocationRepository allocationRepository,
                               NodeManagerClient client,
                               ControlPlaneProperties properties,
                               SecretCipher secretCipher) {
+        this(repository, allocationRepository, client, properties, secretCipher, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ManagedNodeService(ManagedNodeRepository repository,
+                              ResidentialAllocationRepository allocationRepository,
+                              NodeManagerClient client,
+                              ControlPlaneProperties properties,
+                              SecretCipher secretCipher,
+                              AuditLogService auditLogService) {
         this.repository = repository;
         this.allocationRepository = allocationRepository;
         this.client = client;
         this.properties = properties;
         this.secretCipher = secretCipher;
+        this.auditLogService = auditLogService;
     }
 
     public List<NodeView> listNodes() {
@@ -81,6 +93,11 @@ public class ManagedNodeService {
 
     @Transactional
     public NodeView register(RegisterNodeRequest request) {
+        return register(request, null);
+    }
+
+    @Transactional
+    public NodeView register(RegisterNodeRequest request, UUID actorUserId) {
         String baseUrl = normalizeBaseUrl(request.baseUrl());
         String token = request.token().trim();
         repository.findByBaseUrl(baseUrl).ifPresent(node -> {
@@ -103,11 +120,18 @@ public class ManagedNodeService {
             node.setMaxUsers(request.maxUsers());
         }
         node.recordHeartbeat(heartbeat);
-        return toView(repository.save(node));
+        NodeView view = toView(repository.save(node));
+        audit("NODE_REGISTERED", actorUserId, node.getId(), "注册节点 " + node.getName());
+        return view;
     }
 
     @Transactional
     public AgentRegistrationResponse registerAgent(AgentRegistrationRequest request) {
+        return registerAgent(request, null);
+    }
+
+    @Transactional
+    public AgentRegistrationResponse registerAgent(AgentRegistrationRequest request, UUID actorUserId) {
         String baseUrl = normalizeBaseUrl(request.baseUrl());
         String token = request.apiToken().trim();
         AgentInfo info = client.getAgentInfo(baseUrl, token);
@@ -134,11 +158,18 @@ public class ManagedNodeService {
         }
         node.recordHeartbeat(heartbeat);
         node = repository.save(node);
+        audit(created ? "NODE_REGISTERED" : "NODE_UPDATED", actorUserId, node.getId(),
+                (created ? "自动注册节点 " : "更新节点注册信息 ") + node.getName());
         return new AgentRegistrationResponse(node.getId(), node.getRemoteNodeId(), node.getStatus(), created);
     }
 
     @Transactional
     public NodeView updateNode(UUID nodeId, UpdateNodeRequest request) {
+        return updateNode(nodeId, request, null);
+    }
+
+    @Transactional
+    public NodeView updateNode(UUID nodeId, UpdateNodeRequest request, UUID actorUserId) {
         ManagedNode node = getNode(nodeId);
         if (request.enabled() != null) {
             node.setEnabled(request.enabled());
@@ -149,11 +180,18 @@ public class ManagedNodeService {
         if (request.maxUsers() != null) {
             node.setMaxUsers(request.maxUsers());
         }
-        return toView(repository.save(node));
+        NodeView view = toView(repository.save(node));
+        audit("NODE_UPDATED", actorUserId, nodeId, "更新节点配置");
+        return view;
     }
 
     @Transactional
     public void deleteNode(UUID nodeId) {
+        deleteNode(nodeId, null);
+    }
+
+    @Transactional
+    public void deleteNode(UUID nodeId, UUID actorUserId) {
         ManagedNode node = getNode(nodeId);
         if (allocationRepository.countByNodeIdAndStateIn(nodeId, NODE_BLOCKING_ALLOCATION_STATES) > 0) {
             throw new IllegalStateException("节点仍有活动或待重试的自动开通记录，不能移除");
@@ -162,13 +200,21 @@ public class ManagedNodeService {
         historicalAllocations.forEach(ResidentialAllocation::detachNode);
         allocationRepository.saveAll(historicalAllocations);
         repository.delete(node);
+        audit("NODE_DELETED", actorUserId, nodeId, "删除节点 " + node.getName());
     }
 
     @Transactional
     public NodeView refresh(UUID nodeId) {
+        return refresh(nodeId, null);
+    }
+
+    @Transactional
+    public NodeView refresh(UUID nodeId, UUID actorUserId) {
         ManagedNode node = getNode(nodeId);
         refreshNode(node);
-        return toView(node);
+        NodeView view = toView(node);
+        audit("NODE_REFRESHED", actorUserId, nodeId, "刷新节点状态");
+        return view;
     }
 
     public ManagedNode getNode(UUID nodeId) {
@@ -274,5 +320,12 @@ public class ManagedNodeService {
             throw new IllegalArgumentException("节点地址必须是有效的 HTTP 或 HTTPS 地址");
         }
         return value;
+    }
+
+    private void audit(String eventType, UUID actorUserId, UUID nodeId, String summary) {
+        if (auditLogService != null) {
+            auditLogService.record(eventType, actorUserId, "MANAGED_NODE",
+                    nodeId == null ? null : nodeId.toString(), summary);
+        }
     }
 }

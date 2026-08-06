@@ -88,6 +88,10 @@ public class ResidentialAllocation {
     @Lob
     private String vmessCipher;
 
+    /** AES-GCM encrypted JSON map returned by Node Manager for all protocols. */
+    @Lob
+    private String protocolsAllCipher;
+
     @Column(length = 255)
     private String socksHost;
 
@@ -185,11 +189,22 @@ public class ResidentialAllocation {
                          String encryptedVmess,
                          String encryptedSocksUsername,
                          String encryptedSocksPassword) {
+        complete(response, encryptedVless, encryptedVmess, null,
+                encryptedSocksUsername, encryptedSocksPassword);
+    }
+
+    public void complete(CreateUserResponse response,
+                         String encryptedVless,
+                         String encryptedVmess,
+                         String encryptedProtocolsAll,
+                         String encryptedSocksUsername,
+                         String encryptedSocksPassword) {
         this.state = "ACTIVE";
         this.remoteUserId = response.userId();
         this.connectionUuid = response.uuid();
         this.vlessCipher = encryptedVless;
         this.vmessCipher = encryptedVmess;
+        this.protocolsAllCipher = encryptedProtocolsAll;
         if (response.socks() != null) {
             this.socksHost = response.socks().host();
             this.socksPort = response.socks().port();
@@ -301,6 +316,10 @@ public class ResidentialAllocation {
 
     public String getVmessCipher() {
         return vmessCipher;
+    }
+
+    public String getProtocolsAllCipher() {
+        return protocolsAllCipher;
     }
 
     public String getSocksHost() {

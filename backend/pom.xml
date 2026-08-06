@@ -64,6 +64,15 @@
         <resources>
             <resource>
                 <directory>src/main/resources</directory>
+                <!--
+                    application.yml is the developer-only IDEA configuration.  It
+                    imports .env.local and must never be packaged into a release
+                    JAR.  Production uses application-prod.yml and the external
+                    systemd EnvironmentFile instead.
+                -->
+                <excludes>
+                    <exclude>application.yml</exclude>
+                </excludes>
             </resource>
             <resource>
                 <directory>../frontend/dist</directory>

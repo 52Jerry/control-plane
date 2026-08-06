@@ -7,6 +7,8 @@ import com.example.nodecontrol.dto.ControlPlaneModels.UpdateNodeRequest;
 import com.example.nodecontrol.dto.RemoteModels.ReloadResponse;
 import com.example.nodecontrol.service.ManagedNodeService;
 import com.example.nodecontrol.service.NodeUserService;
+import com.example.nodecontrol.security.ControlSessionService;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -28,10 +30,12 @@ public class NodeController {
 
     private final ManagedNodeService nodeService;
     private final NodeUserService userService;
+    private final ControlSessionService sessionService;
 
-    public NodeController(ManagedNodeService nodeService, NodeUserService userService) {
+    public NodeController(ManagedNodeService nodeService, NodeUserService userService, ControlSessionService sessionService) {
         this.nodeService = nodeService;
         this.userService = userService;
+        this.sessionService = sessionService;
     }
 
     @GetMapping("/dashboard")
@@ -46,19 +50,25 @@ public class NodeController {
 
     @PostMapping("/nodes")
     @ResponseStatus(HttpStatus.CREATED)
-    public NodeView register(@Valid @RequestBody RegisterNodeRequest request) {
-        return nodeService.register(request);
+    public NodeView register(@Valid @RequestBody RegisterNodeRequest request, HttpServletRequest servletRequest) {
+        UUID actor = actor(servletRequest);
+        return actor == null ? nodeService.register(request) : nodeService.register(request, actor);
     }
 
     @PostMapping("/nodes/{nodeId}/refresh")
-    public NodeView refresh(@PathVariable UUID nodeId) {
-        return nodeService.refresh(nodeId);
+    public NodeView refresh(@PathVariable UUID nodeId, HttpServletRequest servletRequest) {
+        UUID actor = actor(servletRequest);
+        return actor == null ? nodeService.refresh(nodeId) : nodeService.refresh(nodeId, actor);
     }
 
     @PatchMapping("/nodes/{nodeId}")
     public NodeView update(@PathVariable UUID nodeId,
-                           @Valid @RequestBody UpdateNodeRequest request) {
-        return nodeService.updateNode(nodeId, request);
+                           @Valid @RequestBody UpdateNodeRequest request,
+                           HttpServletRequest servletRequest) {
+        UUID actor = actor(servletRequest);
+        return actor == null
+                ? nodeService.updateNode(nodeId, request)
+                : nodeService.updateNode(nodeId, request, actor);
     }
 
     @PostMapping("/nodes/{nodeId}/reload")
@@ -68,8 +78,17 @@ public class NodeController {
 
     @DeleteMapping("/nodes/{nodeId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void delete(@PathVariable UUID nodeId) {
-        nodeService.deleteNode(nodeId);
+    public void delete(@PathVariable UUID nodeId, HttpServletRequest servletRequest) {
+        UUID actor = actor(servletRequest);
+        if (actor == null) {
+            nodeService.deleteNode(nodeId);
+        } else {
+            nodeService.deleteNode(nodeId, actor);
+        }
+    }
+
+    private UUID actor(HttpServletRequest request) {
+        return sessionService.authenticatedSession(request).map(ControlSessionService.AuthenticatedSession::userId).orElse(null);
     }
 }
 

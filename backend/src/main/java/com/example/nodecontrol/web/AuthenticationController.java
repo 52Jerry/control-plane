@@ -3,12 +3,13 @@ package com.example.nodecontrol.web;
 import com.example.nodecontrol.dto.ControlPlaneModels.LoginRequest;
 import com.example.nodecontrol.dto.ControlPlaneModels.SessionResponse;
 import com.example.nodecontrol.security.ControlSessionService;
+import com.example.nodecontrol.service.AuditLogService;
 import com.example.nodecontrol.service.ControlAccountService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -22,11 +23,14 @@ public class AuthenticationController {
 
     private final ControlSessionService sessionService;
     private final ControlAccountService accountService;
+    private final AuditLogService auditLogService;
 
     public AuthenticationController(ControlSessionService sessionService,
-                                    ControlAccountService accountService) {
+                                    ControlAccountService accountService,
+                                    AuditLogService auditLogService) {
         this.sessionService = sessionService;
         this.accountService = accountService;
+        this.auditLogService = auditLogService;
     }
 
     @PostMapping("/login")
@@ -34,6 +38,7 @@ public class AuthenticationController {
                                                  HttpServletRequest servletRequest) {
         var user = accountService.authenticate(request.username(), request.password());
         if (user.isEmpty()) {
+            auditLogService.record("LOGIN_FAILURE", null, "CONTROL_USER", request.username(), "账号登录失败");
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .cacheControl(CacheControl.noStore())
                     .body(new SessionResponse(false, null));
@@ -43,7 +48,7 @@ public class AuthenticationController {
                 .cacheControl(CacheControl.noStore())
                 .header(HttpHeaders.SET_COOKIE,
                         sessionService.sessionCookie(token, servletRequest.isSecure()).toString())
-                .body(new SessionResponse(true, user.get().getUsername()));
+                .body(new SessionResponse(true, user.get().getUsername(), user.get().getRole()));
     }
 
     @GetMapping("/session")
@@ -51,7 +56,9 @@ public class AuthenticationController {
         var session = sessionService.authenticatedSession(request);
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
-                .body(new SessionResponse(session.isPresent(), session.map(ControlSessionService.AuthenticatedSession::username).orElse(null)));
+                .body(new SessionResponse(session.isPresent(),
+                        session.map(ControlSessionService.AuthenticatedSession::username).orElse(null),
+                        session.map(ControlSessionService.AuthenticatedSession::role).orElse(null)));
     }
 
     @PostMapping("/logout")

@@ -29,8 +29,8 @@ public class AgentRegistrationController {
     private final NodeInstallationService installationService;
 
     public AgentRegistrationController(ManagedNodeService nodeService,
-                                       ControlPlaneProperties properties,
-                                       NodeInstallationService installationService) {
+                                      ControlPlaneProperties properties,
+                                      NodeInstallationService installationService) {
         this.nodeService = nodeService;
         this.properties = properties;
         this.installationService = installationService;
@@ -49,6 +49,9 @@ public class AgentRegistrationController {
                 expectedToken.getBytes(StandardCharsets.UTF_8),
                 suppliedToken.getBytes(StandardCharsets.UTF_8));
         if (validRegistrationToken) {
+            // Agent registration is authenticated by the dedicated registration/install token,
+            // not by a control-plane user session. Keep the legacy overload here so token based
+            // installers remain compatible with existing integrations and tests.
             return noStore(nodeService.registerAgent(request));
         }
 

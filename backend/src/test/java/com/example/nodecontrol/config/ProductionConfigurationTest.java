@@ -40,6 +40,15 @@ class ProductionConfigurationTest {
                 .isEqualTo("jdbc:mysql://custom.example.com:3307/custom");
     }
 
+    @Test
+    void productionDoesNotAllowHibernateToMutateTheSchema() throws IOException {
+        assertThat(productionEnvironment().getProperty("spring.jpa.hibernate.ddl-auto"))
+                .isEqualTo("validate");
+        assertThat(productionEnvironment().getProperty(
+                "control-plane.schema.compatibility-migration-enabled"))
+                .isEqualTo("false");
+    }
+
     private ConfigurableEnvironment productionEnvironment() throws IOException {
         MockEnvironment environment = new MockEnvironment();
         List<PropertySource<?>> sources = new YamlPropertySourceLoader().load(

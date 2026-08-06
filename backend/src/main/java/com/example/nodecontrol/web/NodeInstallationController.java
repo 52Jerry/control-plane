@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/control/node-installation")
@@ -36,9 +37,12 @@ public class NodeInstallationController {
         String createdBy = sessionService.authenticatedSession(request)
                 .map(ControlSessionService.AuthenticatedSession::username)
                 .orElse("control-api");
-        NodeInstallCommandResponse response = installationService.issueCommand(
-                createdBy,
-                resolveControlPlaneUrl(request));
+        UUID actorUserId = sessionService.authenticatedSession(request)
+                .map(ControlSessionService.AuthenticatedSession::userId)
+                .orElse(null);
+        NodeInstallCommandResponse response = actorUserId == null
+                ? installationService.issueCommand(createdBy, resolveControlPlaneUrl(request))
+                : installationService.issueCommand(createdBy, resolveControlPlaneUrl(request), actorUserId);
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
                 .body(response);

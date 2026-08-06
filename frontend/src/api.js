@@ -50,6 +50,7 @@ export const api = {
     method: 'PATCH', body: JSON.stringify(payload),
   }),
   deleteControlAccount: (accountId) => request(`/api/control/accounts/${accountId}`, { method: 'DELETE' }),
+  auditLogs: (params = {}) => request(`/api/control/audit-logs?${queryString(params)}`),
   dashboard: () => request('/api/control/dashboard'),
   nodes: () => request('/api/control/nodes'),
   createNodeInstallCommand: () => request('/api/control/node-installation', { method: 'POST' }),
@@ -71,7 +72,10 @@ export const api = {
   deleteUser: (nodeId, userId) => request(`/api/control/nodes/${nodeId}/users/${encodeURIComponent(userId)}`, {
     method: 'DELETE', headers: operationHeaders('manual-delete'),
   }),
-  allocations: () => request('/api/control/allocations'),
+  allocations: (params = {}) => {
+    const query = queryString({ page: params.page, pageSize: params.pageSize })
+    return request(`/api/control/allocations${query ? `?${query}` : ''}`)
+  },
   allocation: (allocationId) => request(`/api/control/allocations/${allocationId}`),
   retryAllocation: (allocationId) => request(`/api/control/allocations/${allocationId}/retry`, { method: 'POST' }),
   provision: (payload, idempotencyKey) => request('/api/control/allocations', {

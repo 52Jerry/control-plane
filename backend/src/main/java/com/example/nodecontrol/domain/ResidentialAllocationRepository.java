@@ -1,6 +1,8 @@
 package com.example.nodecontrol.domain;
 
 import jakarta.persistence.LockModeType;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -38,6 +40,9 @@ public interface ResidentialAllocationRepository extends JpaRepository<Residenti
 
     @EntityGraph(attributePaths = "node")
     List<ResidentialAllocation> findAllBy(Sort sort);
+
+    @EntityGraph(attributePaths = "node")
+    Page<ResidentialAllocation> findAllBy(Pageable pageable);
 
     long countByNodeIdAndStateIn(UUID nodeId, Collection<String> states);
 

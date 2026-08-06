@@ -8,6 +8,7 @@ import com.example.nodecontrol.domain.ManagedNodeRepository;
 import com.example.nodecontrol.domain.ResidentialAllocation;
 import com.example.nodecontrol.domain.ResidentialAllocationRepository;
 import com.example.nodecontrol.dto.ControlPlaneModels.AllocationView;
+import com.example.nodecontrol.dto.ControlPlaneModels.AllocationPageResponse;
 import com.example.nodecontrol.dto.ControlPlaneModels.ProvisionRequest;
 import com.example.nodecontrol.dto.ControlPlaneModels.ProxyProvisionBatchResponse;
 import com.example.nodecontrol.dto.ControlPlaneModels.ProxyProvisionRequest;
@@ -24,6 +25,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -39,6 +42,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.UUID;
@@ -52,6 +56,8 @@ public class ProvisioningService {
 
     private static final Collection<String> CAPACITY_STATES = List.of("PROVISIONING", "RETRYABLE", "ACTIVE");
     private static final List<String> RESIDENTIAL_PROTOCOLS = List.of("vless", "vmess", "socks");
+    private static final List<String> COMPLETE_PROTOCOL_LINKS = List.of(
+            "socks5", "bitbrowser", "vless", "socksAcceleration", "vmess");
 
     private final ResidentialAllocationRepository allocationRepository;
     private final ManagedNodeRepository nodeRepository;
@@ -62,6 +68,7 @@ public class ProvisioningService {
     private final HostAddressResolver hostAddressResolver;
     private final IpCountryResolver ipCountryResolver;
     private final TransactionTemplate transactionTemplate;
+    private final AuditLogService auditLogService;
 
     public ProvisioningService(ResidentialAllocationRepository allocationRepository,
                                ManagedNodeRepository nodeRepository,
@@ -71,7 +78,8 @@ public class ProvisioningService {
                                ControlPlaneProperties properties,
                                HostAddressResolver hostAddressResolver,
                                IpCountryResolver ipCountryResolver,
-                               PlatformTransactionManager transactionManager) {
+                               PlatformTransactionManager transactionManager,
+                               AuditLogService auditLogService) {
         this.allocationRepository = allocationRepository;
         this.nodeRepository = nodeRepository;
         this.client = client;
@@ -81,19 +89,32 @@ public class ProvisioningService {
         this.hostAddressResolver = hostAddressResolver;
         this.ipCountryResolver = ipCountryResolver;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.auditLogService = auditLogService;
     }
 
     public AllocationView provision(String idempotencyKey, ProvisionRequest request) {
+        return provision(idempotencyKey, request, null);
+    }
+
+    public AllocationView provision(String idempotencyKey, ProvisionRequest request, UUID actorUserId) {
         String requestKey = normalizeRequestKey(idempotencyKey);
         validateProtocols(request.protocols());
         ProvisionRequest effectiveRequest = withEffectiveUserId(request, requestKey);
         String requestHash = hash(effectiveRequest);
         ResidentialAllocation allocation = createOrLoad(requestKey, requestHash, effectiveRequest);
-        return executeProvisioning(allocation, effectiveRequest, null);
+        AllocationView result = executeProvisioning(allocation, effectiveRequest, null);
+        audit("ALLOCATION_PROVISIONED", actorUserId, allocation.getId(), "创建节点分配");
+        return result;
     }
 
     public ProxyProvisionBatchResponse provisionProxyBatch(String idempotencyKey,
                                                            ProxyProvisionRequest request) {
+        return provisionProxyBatch(idempotencyKey, request, null);
+    }
+
+    public ProxyProvisionBatchResponse provisionProxyBatch(String idempotencyKey,
+                                                           ProxyProvisionRequest request,
+                                                           UUID actorUserId) {
         String batchKey = normalizeRequestKey(idempotencyKey);
         List<ProxyRowParseResult> parsedRows = parseProxyRows(request.input());
         List<PreparedProxyRow> preparedRows = new ArrayList<>();
@@ -146,15 +167,24 @@ public class ProvisioningService {
         int succeeded = (int) results.stream()
                 .filter(this::isSuccessfulResidentialResult)
                 .count();
-        return new ProxyProvisionBatchResponse(
+        ProxyProvisionBatchResponse response = new ProxyProvisionBatchResponse(
                 results.size(), succeeded, results.size() - succeeded, results);
+        audit("PROXY_BATCH_PROVISIONED", actorUserId, batchKey,
+                "批量创建住宅 SOCKS 节点：成功 " + succeeded + "，失败 " + (results.size() - succeeded));
+        return response;
     }
 
     public AllocationView retry(UUID allocationId) {
+        return retry(allocationId, null);
+    }
+
+    public AllocationView retry(UUID allocationId, UUID actorUserId) {
         ResidentialAllocation allocation = allocationRepository.findById(allocationId)
                 .orElseThrow(() -> new NoSuchElementException("分配记录不存在"));
         if ("ACTIVE".equals(allocation.getState())) {
-            return toView(allocation);
+            AllocationView view = toView(allocation);
+            audit("ALLOCATION_RETRIED", actorUserId, allocationId, "分配已激活，无需重试");
+            return view;
         }
         if ("PROVISIONING".equals(allocation.getState())) {
             throw new IllegalStateException("该分配正在开通中");
@@ -168,7 +198,9 @@ public class ProvisioningService {
                 allocation.getControlUserId(),
                 splitProtocols(allocation.getProtocols()),
                 null);
-        return executeProvisioning(allocation, request, proxyFrom(allocation));
+        AllocationView view = executeProvisioning(allocation, request, proxyFrom(allocation));
+        audit("ALLOCATION_RETRIED", actorUserId, allocationId, "重试节点分配");
+        return view;
     }
 
     private AllocationView executeProvisioning(ResidentialAllocation allocation,
@@ -202,7 +234,8 @@ public class ProvisioningService {
                     UserConnection existing = client.getConnections(prepared.node(), prepared.userId());
                     CreateUserResponse recovered = new CreateUserResponse(
                             existing.success(), existing.userId(), existing.uuid(), existing.protocols(),
-                            existing.vless(), existing.vmess(), existing.socks(), existing.proxyBound());
+                            existing.vless(), existing.vmess(), existing.socks(), existing.proxyBound(),
+                            existing.protocolsAll());
                     if (proxy != null) {
                         validateResidentialResponse(recovered);
                     }
@@ -224,6 +257,21 @@ public class ProvisioningService {
         return allocationRepository.findAllBy(Sort.by(Sort.Direction.DESC, "createdAt")).stream()
                 .map(allocation -> toView(allocation, false))
                 .toList();
+    }
+
+    public AllocationPageResponse listAllocations(int page, int pageSize) {
+        if (page < 1) {
+            throw new IllegalArgumentException("页码必须从 1 开始");
+        }
+        if (pageSize < 1 || pageSize > 100) {
+            throw new IllegalArgumentException("每页条数必须在 1-100 之间");
+        }
+        Page<ResidentialAllocation> result = allocationRepository.findAllBy(
+                PageRequest.of(page - 1, pageSize, Sort.by(Sort.Direction.DESC, "createdAt")));
+        List<AllocationView> items = result.getContent().stream()
+                .map(allocation -> toView(allocation, false))
+                .toList();
+        return new AllocationPageResponse(items, page, pageSize, result.getTotalElements(), result.getTotalPages());
     }
 
     public AllocationView getAllocation(UUID allocationId) {
@@ -654,6 +702,7 @@ public class ProvisioningService {
                     response,
                     secretCipher.encrypt(response.vless()),
                     secretCipher.encrypt(response.vmess()),
+                    encryptProtocolsAll(response.protocolsAll()),
                     response.socks() == null ? null : secretCipher.encrypt(response.socks().username()),
                     response.socks() == null ? null : secretCipher.encrypt(response.socks().password()));
             allocationRepository.save(allocation);
@@ -663,6 +712,17 @@ public class ProvisioningService {
             throw new IllegalStateException("完成节点开通记录失败");
         }
         return result;
+    }
+
+    private String encryptProtocolsAll(Map<String, String> protocolsAll) {
+        if (protocolsAll == null || protocolsAll.isEmpty()) {
+            return null;
+        }
+        try {
+            return secretCipher.encrypt(objectMapper.writeValueAsString(protocolsAll));
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("保存节点协议连接失败", exception);
+        }
     }
 
     private void fail(UUID allocationId, String error, boolean definitive) {
@@ -700,6 +760,7 @@ public class ProvisioningService {
                     allocation.getSocksPort(),
                     secretCipher.decrypt(allocation.getSocksUsernameCipher()),
                     secretCipher.decrypt(allocation.getSocksPasswordCipher()));
+            Map<String, String> protocolsAll = decryptProtocolsAll(allocation.getProtocolsAllCipher());
             connection = new UserConnection(
                     true,
                     allocation.getRemoteUserId(),
@@ -709,8 +770,10 @@ public class ProvisioningService {
                     secretCipher.decrypt(allocation.getVmessCipher()),
                     socks,
                     allocation.isProxyBound(),
-                    allocation.getCompletedAt());
+                    allocation.getCompletedAt(),
+                    protocolsAll);
         }
+        Map<String, String> protocolsAll = connection == null ? Map.of() : connection.protocolsAll();
         return new AllocationView(
                 allocation.getId(),
                 allocation.getRequestKey(),
@@ -721,6 +784,7 @@ public class ProvisioningService {
                 node == null ? null : node.getName(),
                 node == null ? null : node.getHost(),
                 connection,
+                protocolsAll,
                 allocation.getLastError(),
                 allocation.getCreatedAt(),
                 allocation.getUpdatedAt(),
@@ -734,6 +798,20 @@ public class ProvisioningService {
                 allocation.getProxySourceIp(),
                 allocation.getProxySourceDomain(),
                 allocation.getProxySourcePort());
+    }
+
+    private Map<String, String> decryptProtocolsAll(String cipherText) {
+        if (cipherText == null || cipherText.isBlank()) {
+            return Map.of();
+        }
+        try {
+            Map<String, String> value = objectMapper.readValue(
+                    secretCipher.decrypt(cipherText),
+                    objectMapper.getTypeFactory().constructMapType(Map.class, String.class, String.class));
+            return value == null ? Map.of() : value;
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("节点协议连接数据格式无效", exception);
+        }
     }
 
     private List<ProxyRowParseResult> parseProxyRows(String input) {
@@ -1000,6 +1078,7 @@ public class ProvisioningService {
                 view.nodeName(),
                 view.nodeHost(),
                 view.connection(),
+                view.protocolsAll(),
                 view.lastError(),
                 view.createdAt(),
                 view.updatedAt(),
@@ -1029,6 +1108,10 @@ public class ProvisioningService {
                 || !response.proxyBound()) {
             throw new IllegalStateException("节点管理器未返回已绑定原生住宅出口的 VLESS、VMess、SOCKS5 三协议连接");
         }
+        if (properties.getProvisioning().isRequireCompleteProtocolsAll()
+                && !hasCompleteProtocolsAll(response.protocolsAll())) {
+            throw new IllegalStateException("节点管理器未返回完整的五协议连接，请先升级 Node Manager");
+        }
     }
 
     private void validateResidentialAllocation(AllocationView allocation) {
@@ -1048,7 +1131,16 @@ public class ProvisioningService {
                 && hasResidentialProtocols(connection.protocols())
                 && hasText(connection.vless())
                 && hasText(connection.vmess())
-                && hasUsableSocksConnection(connection.socks());
+                && hasUsableSocksConnection(connection.socks())
+                && (!properties.getProvisioning().isRequireCompleteProtocolsAll()
+                || hasCompleteProtocolsAll(connection.protocolsAll()));
+    }
+
+    private boolean hasCompleteProtocolsAll(Map<String, String> protocolsAll) {
+        if (protocolsAll == null || protocolsAll.isEmpty()) {
+            return false;
+        }
+        return COMPLETE_PROTOCOL_LINKS.stream().allMatch(key -> hasText(protocolsAll.get(key)));
     }
 
     private boolean hasResidentialProtocols(List<String> protocols) {
@@ -1090,6 +1182,13 @@ public class ProvisioningService {
 
     private String truncateError(String message) {
         return message.length() > 1000 ? message.substring(0, 1000) : message;
+    }
+
+    private void audit(String eventType, UUID actorUserId, Object targetId, String summary) {
+        if (auditLogService != null) {
+            auditLogService.record(eventType, actorUserId, "ALLOCATION",
+                    targetId == null ? null : String.valueOf(targetId), summary);
+        }
     }
 
     private String normalizeRequestKey(String idempotencyKey) {

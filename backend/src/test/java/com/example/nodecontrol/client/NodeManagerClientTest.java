@@ -103,7 +103,10 @@ class NodeManagerClientTest {
                         "{\"result\":{\"success\":true,\"userId\":\"alice\",\"uuid\":\"uuid-1\","
                                 + "\"protocols\":[\"socks\"],\"socks\":{\"host\":\"node.example\","
                                 + "\"port\":1080,\"username\":\"alice\",\"password\":\"remote-secret\"},"
-                                + "\"proxyBound\":false}}",
+                                + "\"proxyBound\":false,\"protocolsAll\":{"
+                                + "\"socks5\":\"socks://generated\",\"bitbrowser\":\"generated\","
+                                + "\"vless\":\"vless://generated\",\"socksAcceleration\":\"socks://accelerated\","
+                                + "\"vmess\":\"vmess://generated\"}}}",
                         org.springframework.http.MediaType.APPLICATION_JSON));
 
         UserConnection response = client.getConnections(node("api-token"), "alice");
@@ -112,6 +115,8 @@ class NodeManagerClientTest {
         assertThat(response.userId()).isEqualTo("alice");
         assertThat(response.uuid()).isEqualTo("uuid-1");
         assertThat(response.socks().host()).isEqualTo("node.example");
+        assertThat(response.protocolsAll()).containsEntry("vless", "vless://generated");
+        assertThat(response.protocolsAll()).containsEntry("socksAcceleration", "socks://accelerated");
         server.verify();
     }
 

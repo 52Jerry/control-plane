@@ -46,7 +46,7 @@ control-plane/
 
 ## 数据库准备
 
-建议给控制面单独创建数据库和账号。该账号需要对控制面数据库拥有建表和读写权限，Hibernate 使用 `ddl-auto=update` 创建表。
+建议给控制面单独创建数据库和账号。首次部署前请按兼容迁移/后续版本化迁移准备表结构；生产环境使用 `ddl-auto=validate`，不会在启动时自动创建或修改业务表。升级已有数据库时，先执行 [生产结构迁移脚本](doc/production-schema-migration.sql)，再替换应用 JAR。
 
 ```sql
 CREATE DATABASE `control-plane` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -154,7 +154,7 @@ npm.cmd run dev
 .\scripts\run-jar.ps1
 ```
 
-构建脚本先生成 Vue 静态资源，再打包到 Spring Boot JAR。生产环境建议以 systemd 运行 JAR，并通过 HTTPS 反向代理暴露控制面。
+构建脚本先生成 Vue 静态资源，再打包到 Spring Boot JAR。生产环境建议以 systemd 运行 JAR，并通过 HTTPS 反向代理暴露控制面。Maven 会显式排除本地 `application.yml`，生产包只携带 `application-prod.yml`；真实配置继续从 `/etc/node-control-plane.env` 注入。
 
 生产服务器的 EnvironmentFile 必须包含：
 
@@ -223,5 +223,16 @@ mvn test
 ```
 
 当前测试覆盖加密存储、节点注册更新、删除保护、节点选择、无代理直出请求、批量 SOCKS 两种格式、表格粘贴清理、逐行错误隔离、结果排序、远端重试、幂等冲突、账号密码会话、旧 Token 兼容、一次性安装码单次消费/失败释放/过期拒绝、注册鉴权和敏感响应缓存策略。
+
+### 生产数据库升级顺序
+
+1. 在 RDS 控制台或受控客户端完成 `control-plane` 数据库备份，并记录备份时间和恢复点。
+2. 确认当前连接库为 `control-plane`；不要在 `niusuip` 或其他业务库执行脚本。
+3. 使用最小权限的迁移账号执行 `doc/production-schema-migration.sql`。脚本是幂等的，只补字段并移除旧版本在 `control_user_id` 上的单列全局唯一索引，不删除业务数据。
+4. 使用脚本末尾的 `SHOW COLUMNS` 与 `SHOW INDEX` 语句验证三个字段存在，并确认没有误删主键或复合索引。
+5. 再部署生产 JAR。生产配置保持 `spring.jpa.hibernate.ddl-auto=validate` 与 `control-plane.schema.compatibility-migration-enabled=false`。
+6. 启动后检查 `/actuator/health`、登录、节点列表和一条连接详情。
+
+回滚应优先使用数据库备份恢复；不要通过删除新字段回滚，因为这可能破坏已经写入的协议密文或节点心跳数据。
 
 详细实现、运维和安全边界参见 [账号登录与批量 SOCKS 节点开发文档](doc/账号登录与批量SOCKS节点开发文档.md)，后续演进参见 [后续优化清单](doc/后续优化清单.md)。

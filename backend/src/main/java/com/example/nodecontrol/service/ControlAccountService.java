@@ -25,13 +25,16 @@ public class ControlAccountService {
     private final ControlUserRepository repository;
     private final PasswordEncoder passwordEncoder;
     private final ControlPlaneProperties properties;
+    private final AuditLogService auditLogService;
 
     public ControlAccountService(ControlUserRepository repository,
                                  PasswordEncoder passwordEncoder,
-                                 ControlPlaneProperties properties) {
+                                 ControlPlaneProperties properties,
+                                 AuditLogService auditLogService) {
         this.repository = repository;
         this.passwordEncoder = passwordEncoder;
         this.properties = properties;
+        this.auditLogService = auditLogService;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -47,7 +50,7 @@ public class ControlAccountService {
         }
         validateUsername(username.trim());
         validatePassword(password);
-        repository.save(new ControlUser(username.trim(), passwordEncoder.encode(password)));
+        repository.save(new ControlUser(username.trim(), passwordEncoder.encode(password), "ADMIN"));
     }
 
     @Transactional
@@ -61,6 +64,7 @@ public class ControlAccountService {
         match.ifPresent(user -> {
             user.recordLogin();
             repository.save(user);
+            auditLogService.record("LOGIN_SUCCESS", user.getId(), "CONTROL_USER", user.getId().toString(), "账号登录成功");
         });
         return match;
     }
@@ -80,7 +84,10 @@ public class ControlAccountService {
         if (repository.findByUsernameIgnoreCase(username).isPresent()) {
             throw new IllegalStateException("管理账号已经存在");
         }
-        ControlUser user = repository.save(new ControlUser(username, passwordEncoder.encode(request.password())));
+        String role = request.role() == null ? "ADMIN" : request.role();
+        ControlUser user = repository.save(new ControlUser(username, passwordEncoder.encode(request.password()), role));
+        auditLogService.record("ACCOUNT_CREATED", currentUserId, "CONTROL_USER", user.getId().toString(),
+                "创建管理账号 " + user.getUsername() + "（角色 " + user.getRole() + "）");
         return toView(user, currentUserId);
     }
 
@@ -102,7 +109,13 @@ public class ControlAccountService {
             validatePassword(request.password());
             user.changePasswordHash(passwordEncoder.encode(request.password()));
         }
-        return toView(repository.save(user), currentUserId);
+        if (request.role() != null) {
+            user.setRole(request.role());
+        }
+        ControlUser saved = repository.save(user);
+        auditLogService.record("ACCOUNT_UPDATED", currentUserId, "CONTROL_USER", saved.getId().toString(),
+                "更新管理账号 " + saved.getUsername());
+        return toView(saved, currentUserId);
     }
 
     @Transactional
@@ -115,6 +128,8 @@ public class ControlAccountService {
             throw new IllegalStateException("至少需要保留一个可登录账号");
         }
         repository.delete(user);
+        auditLogService.record("ACCOUNT_DELETED", currentUserId, "CONTROL_USER", user.getId().toString(),
+                "删除管理账号 " + user.getUsername());
     }
 
     private ControlUser get(UUID userId) {
@@ -140,6 +155,7 @@ public class ControlAccountService {
                 user.getUsername(),
                 user.isEnabled(),
                 user.getId().equals(currentUserId),
+                user.getRole(),
                 user.getCreatedAt(),
                 user.getUpdatedAt(),
                 user.getLastLoginAt());

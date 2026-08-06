@@ -28,15 +28,29 @@ public class NodeInstallationService {
 
     private final NodeInstallTokenRepository repository;
     private final ControlPlaneProperties properties;
+    private final AuditLogService auditLogService;
 
     public NodeInstallationService(NodeInstallTokenRepository repository,
                                    ControlPlaneProperties properties) {
+        this(repository, properties, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public NodeInstallationService(NodeInstallTokenRepository repository,
+                                   ControlPlaneProperties properties,
+                                   AuditLogService auditLogService) {
         this.repository = repository;
         this.properties = properties;
+        this.auditLogService = auditLogService;
     }
 
     @Transactional
     public NodeInstallCommandResponse issueCommand(String createdBy, String controlPlaneUrl) {
+        return issueCommand(createdBy, controlPlaneUrl, null);
+    }
+
+    @Transactional
+    public NodeInstallCommandResponse issueCommand(String createdBy, String controlPlaneUrl, UUID actorUserId) {
         Instant now = Instant.now();
         long ttlSeconds = Math.max(60, properties.getInstallation().getTokenTtlSeconds());
         Instant expiresAt = now.plusSeconds(ttlSeconds);
@@ -48,6 +62,11 @@ public class NodeInstallationService {
         String command = "bash <(curl -fsSL " + shellQuote(scriptUrl) + ") "
                 + shellQuote(normalizeHttpUrl(controlPlaneUrl, "控制中心公网地址")) + " "
                 + shellQuote(rawToken);
+        if (auditLogService != null) {
+            auditLogService.record("NODE_INSTALL_COMMAND_ISSUED", actorUserId,
+                    "NODE_INSTALLATION", normalizeCreatedBy(createdBy),
+                    "生成 Node Manager 一键安装命令，过期时间 " + expiresAt);
+        }
         return new NodeInstallCommandResponse(command, expiresAt, ttlSeconds);
     }
 

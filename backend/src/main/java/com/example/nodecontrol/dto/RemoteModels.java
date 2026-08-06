@@ -9,6 +9,7 @@ import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 import java.time.Instant;
+import java.util.Map;
 import java.util.List;
 
 public final class RemoteModels {
@@ -107,8 +108,24 @@ public final class RemoteModels {
             String vmess,
             SocksConnection socks,
             boolean proxyBound,
-            Instant createdAt
+            Instant createdAt,
+            Map<String, String> protocolsAll
     ) {
+        public UserConnection(boolean success,
+                              String userId,
+                              String uuid,
+                              List<String> protocols,
+                              String vless,
+                              String vmess,
+                              SocksConnection socks,
+                              boolean proxyBound,
+                              Instant createdAt) {
+            this(success, userId, uuid, protocols, vless, vmess, socks, proxyBound, createdAt, Map.of());
+        }
+
+        public UserConnection {
+            protocolsAll = protocolsAll == null ? Map.of() : Map.copyOf(protocolsAll);
+        }
     }
 
     public record ProxyDetails(
@@ -155,8 +172,23 @@ public final class RemoteModels {
             String vless,
             String vmess,
             SocksConnection socks,
-            boolean proxyBound
+            boolean proxyBound,
+            Map<String, String> protocolsAll
     ) {
+        public CreateUserResponse(boolean success,
+                                  String userId,
+                                  String uuid,
+                                  List<String> protocols,
+                                  String vless,
+                                  String vmess,
+                                  SocksConnection socks,
+                                  boolean proxyBound) {
+            this(success, userId, uuid, protocols, vless, vmess, socks, proxyBound, Map.of());
+        }
+
+        public CreateUserResponse {
+            protocolsAll = protocolsAll == null ? Map.of() : Map.copyOf(protocolsAll);
+        }
     }
 
     public record BindProxyRequest(
