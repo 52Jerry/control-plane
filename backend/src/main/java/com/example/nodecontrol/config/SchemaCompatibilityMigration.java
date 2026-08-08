@@ -35,6 +35,7 @@ public class SchemaCompatibilityMigration {
     private static final String ALLOCATION_TABLE = "residential_allocations";
     private static final String SOURCE_PORT_COLUMN = "proxy_source_port";
     private static final String PROTOCOLS_ALL_COLUMN = "protocols_all_cipher";
+    private static final String PROTOCOL_INFO_COLUMN = "protocol_info_cipher";
     private static final String NODE_TABLE = "managed_nodes";
     private static final String SOCKS_INBOUND_PORT_COLUMN = "socks_inbound_port";
     private static final String CONTROL_USER_TABLE = "control_users";
@@ -77,6 +78,11 @@ public class SchemaCompatibilityMigration {
                 jdbcTemplate.execute("ALTER TABLE residential_allocations "
                         + "ADD COLUMN protocols_all_cipher LONGTEXT NULL");
                 log.info("Added missing compatibility column {}.{}", ALLOCATION_TABLE, PROTOCOLS_ALL_COLUMN);
+            }
+            if (!columnExists(metadata, ALLOCATION_TABLE, PROTOCOL_INFO_COLUMN)) {
+                jdbcTemplate.execute("ALTER TABLE residential_allocations "
+                        + "ADD COLUMN protocol_info_cipher LONGTEXT NULL");
+                log.info("Added missing compatibility column {}.{}", ALLOCATION_TABLE, PROTOCOL_INFO_COLUMN);
             }
             if (tableExists(metadata, NODE_TABLE)
                     && !columnExists(metadata, NODE_TABLE, SOCKS_INBOUND_PORT_COLUMN)) {

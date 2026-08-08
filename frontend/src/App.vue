@@ -6,6 +6,7 @@ import {
   Wrench, X,
 } from 'lucide-vue-next'
 import { ApiError, api, setUnauthorizedHandler } from './api'
+import { buildAllProtocols } from './protocols'
 
 const meta = ref({ version: '0.1.0', authRequired: false, passwordLoginEnabled: false })
 const dashboard = ref({ nodeCount: 0, onlineNodeCount: 0, degradedNodeCount: 0, userCount: 0, connections: 0, totalTraffic: 0 })
@@ -640,6 +641,8 @@ function socksUri(socks) {
 
 function connectionLinks(connection) {
   if (!connection) return []
+  const structured = buildAllProtocols(connection.protocolInfo, connection.protocols || ['vless', 'vmess', 'socks'])
+  if (structured.length > 0) return structured
   const labels = {
     socks5: 'SOCKS5 原始',
     bitbrowser: 'BitBrowser',

@@ -9,6 +9,8 @@ import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 import java.time.Instant;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -257,6 +259,7 @@ public final class ControlPlaneModels {
             String nodeHost,
             UserConnection connection,
             Map<String, String> protocolsAll,
+            Map<String, Object> protocolInfo,
             String lastError,
             Instant createdAt,
             Instant updatedAt,
@@ -285,7 +288,7 @@ public final class ControlPlaneModels {
                               Instant updatedAt,
                               Instant completedAt) {
             this(id, requestKey, userId, protocols, state, nodeId, nodeName, nodeHost,
-                    connection, Map.of(), lastError, createdAt, updatedAt, completedAt,
+                    connection, Map.of(), Map.of(), lastError, createdAt, updatedAt, completedAt,
                     "DIRECT", false, null, null, null, null, null, null, null);
         }
 
@@ -307,12 +310,17 @@ public final class ControlPlaneModels {
                               String proxyServer,
                               Integer proxyPort) {
             this(id, requestKey, userId, protocols, state, nodeId, nodeName, nodeHost,
-                    connection, Map.of(), lastError, createdAt, updatedAt, completedAt,
+                    connection, Map.of(), Map.of(), lastError, createdAt, updatedAt, completedAt,
                     provisioningMode, proxyBound, proxyServer, proxyPort, null, null, null, null, null);
         }
 
         public AllocationView {
-            protocolsAll = protocolsAll == null ? Map.of() : Map.copyOf(protocolsAll);
+            protocolsAll = protocolsAll == null
+                    ? Map.of()
+                    : Collections.unmodifiableMap(new LinkedHashMap<>(protocolsAll));
+            protocolInfo = protocolInfo == null
+                    ? Map.of()
+                    : Collections.unmodifiableMap(new LinkedHashMap<>(protocolInfo));
         }
     }
 }

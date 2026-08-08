@@ -237,7 +237,7 @@ public class ProvisioningService {
                     CreateUserResponse recovered = new CreateUserResponse(
                             existing.success(), existing.userId(), existing.uuid(), existing.protocols(),
                             existing.vless(), existing.vmess(), existing.socks(), existing.proxyBound(),
-                            existing.protocolsAll());
+                            existing.protocolsAll(), existing.protocolInfo());
                     if (proxy != null) {
                         validateResidentialResponse(recovered);
                     }
@@ -705,6 +705,7 @@ public class ProvisioningService {
                     secretCipher.encrypt(response.vless()),
                     secretCipher.encrypt(response.vmess()),
                     encryptProtocolsAll(response.protocolsAll()),
+                    encryptProtocolInfo(response.protocolInfo()),
                     response.socks() == null ? null : secretCipher.encrypt(response.socks().username()),
                     response.socks() == null ? null : secretCipher.encrypt(response.socks().password()));
             allocationRepository.save(allocation);
@@ -724,6 +725,17 @@ public class ProvisioningService {
             return secretCipher.encrypt(objectMapper.writeValueAsString(protocolsAll));
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("保存节点协议连接失败", exception);
+        }
+    }
+
+    private String encryptProtocolInfo(Map<String, Object> protocolInfo) {
+        if (protocolInfo == null || protocolInfo.isEmpty()) {
+            return null;
+        }
+        try {
+            return secretCipher.encrypt(objectMapper.writeValueAsString(protocolInfo));
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("保存节点协议参数失败", exception);
         }
     }
 
@@ -763,6 +775,7 @@ public class ProvisioningService {
                     secretCipher.decrypt(allocation.getSocksUsernameCipher()),
                     secretCipher.decrypt(allocation.getSocksPasswordCipher()));
             Map<String, String> protocolsAll = decryptProtocolsAll(allocation.getProtocolsAllCipher());
+            Map<String, Object> protocolInfo = decryptProtocolInfo(allocation.getProtocolInfoCipher());
             connection = new UserConnection(
                     true,
                     allocation.getRemoteUserId(),
@@ -773,9 +786,11 @@ public class ProvisioningService {
                     socks,
                     allocation.isProxyBound(),
                     allocation.getCompletedAt(),
-                    protocolsAll);
+                    protocolsAll,
+                    protocolInfo);
         }
         Map<String, String> protocolsAll = connection == null ? Map.of() : connection.protocolsAll();
+        Map<String, Object> protocolInfo = connection == null ? Map.of() : connection.protocolInfo();
         return new AllocationView(
                 allocation.getId(),
                 allocation.getRequestKey(),
@@ -787,6 +802,7 @@ public class ProvisioningService {
                 node == null ? null : node.getHost(),
                 connection,
                 protocolsAll,
+                protocolInfo,
                 allocation.getLastError(),
                 allocation.getCreatedAt(),
                 allocation.getUpdatedAt(),
@@ -813,6 +829,20 @@ public class ProvisioningService {
             return value == null ? Map.of() : value;
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("节点协议连接数据格式无效", exception);
+        }
+    }
+
+    private Map<String, Object> decryptProtocolInfo(String cipherText) {
+        if (cipherText == null || cipherText.isBlank()) {
+            return Map.of();
+        }
+        try {
+            Map<String, Object> value = objectMapper.readValue(
+                    secretCipher.decrypt(cipherText),
+                    objectMapper.getTypeFactory().constructMapType(Map.class, String.class, Object.class));
+            return value == null ? Map.of() : value;
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("节点协议参数数据格式无效", exception);
         }
     }
 
@@ -1081,6 +1111,7 @@ public class ProvisioningService {
                 view.nodeHost(),
                 view.connection(),
                 view.protocolsAll(),
+                view.protocolInfo(),
                 view.lastError(),
                 view.createdAt(),
                 view.updatedAt(),

@@ -92,6 +92,10 @@ public class ResidentialAllocation {
     @Lob
     private String protocolsAllCipher;
 
+    /** AES-GCM encrypted structured protocol parameters used by the frontend to build links. */
+    @Lob
+    private String protocolInfoCipher;
+
     @Column(length = 255)
     private String socksHost;
 
@@ -189,7 +193,7 @@ public class ResidentialAllocation {
                          String encryptedVmess,
                          String encryptedSocksUsername,
                          String encryptedSocksPassword) {
-        complete(response, encryptedVless, encryptedVmess, null,
+        complete(response, encryptedVless, encryptedVmess, null, null,
                 encryptedSocksUsername, encryptedSocksPassword);
     }
 
@@ -197,6 +201,7 @@ public class ResidentialAllocation {
                          String encryptedVless,
                          String encryptedVmess,
                          String encryptedProtocolsAll,
+                         String encryptedProtocolInfo,
                          String encryptedSocksUsername,
                          String encryptedSocksPassword) {
         this.state = "ACTIVE";
@@ -205,6 +210,7 @@ public class ResidentialAllocation {
         this.vlessCipher = encryptedVless;
         this.vmessCipher = encryptedVmess;
         this.protocolsAllCipher = encryptedProtocolsAll;
+        this.protocolInfoCipher = encryptedProtocolInfo;
         if (response.socks() != null) {
             this.socksHost = response.socks().host();
             this.socksPort = response.socks().port();
@@ -320,6 +326,10 @@ public class ResidentialAllocation {
 
     public String getProtocolsAllCipher() {
         return protocolsAllCipher;
+    }
+
+    public String getProtocolInfoCipher() {
+        return protocolInfoCipher;
     }
 
     public String getSocksHost() {

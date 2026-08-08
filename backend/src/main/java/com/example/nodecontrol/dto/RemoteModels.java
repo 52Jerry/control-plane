@@ -9,6 +9,8 @@ import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 import java.time.Instant;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.List;
 
@@ -109,7 +111,8 @@ public final class RemoteModels {
             SocksConnection socks,
             boolean proxyBound,
             Instant createdAt,
-            Map<String, String> protocolsAll
+            Map<String, String> protocolsAll,
+            Map<String, Object> protocolInfo
     ) {
         public UserConnection(boolean success,
                               String userId,
@@ -120,11 +123,29 @@ public final class RemoteModels {
                               SocksConnection socks,
                               boolean proxyBound,
                               Instant createdAt) {
-            this(success, userId, uuid, protocols, vless, vmess, socks, proxyBound, createdAt, Map.of());
+            this(success, userId, uuid, protocols, vless, vmess, socks, proxyBound, createdAt, Map.of(), Map.of());
+        }
+
+        public UserConnection(boolean success,
+                              String userId,
+                              String uuid,
+                              List<String> protocols,
+                              String vless,
+                              String vmess,
+                              SocksConnection socks,
+                              boolean proxyBound,
+                              Instant createdAt,
+                              Map<String, String> protocolsAll) {
+            this(success, userId, uuid, protocols, vless, vmess, socks, proxyBound, createdAt, protocolsAll, Map.of());
         }
 
         public UserConnection {
-            protocolsAll = protocolsAll == null ? Map.of() : Map.copyOf(protocolsAll);
+            protocolsAll = protocolsAll == null
+                    ? Map.of()
+                    : Collections.unmodifiableMap(new LinkedHashMap<>(protocolsAll));
+            protocolInfo = protocolInfo == null
+                    ? Map.of()
+                    : Collections.unmodifiableMap(new LinkedHashMap<>(protocolInfo));
         }
     }
 
@@ -173,7 +194,8 @@ public final class RemoteModels {
             String vmess,
             SocksConnection socks,
             boolean proxyBound,
-            Map<String, String> protocolsAll
+            Map<String, String> protocolsAll,
+            Map<String, Object> protocolInfo
     ) {
         public CreateUserResponse(boolean success,
                                   String userId,
@@ -183,11 +205,28 @@ public final class RemoteModels {
                                   String vmess,
                                   SocksConnection socks,
                                   boolean proxyBound) {
-            this(success, userId, uuid, protocols, vless, vmess, socks, proxyBound, Map.of());
+            this(success, userId, uuid, protocols, vless, vmess, socks, proxyBound, Map.of(), Map.of());
+        }
+
+        public CreateUserResponse(boolean success,
+                                  String userId,
+                                  String uuid,
+                                  List<String> protocols,
+                                  String vless,
+                                  String vmess,
+                                  SocksConnection socks,
+                                  boolean proxyBound,
+                                  Map<String, String> protocolsAll) {
+            this(success, userId, uuid, protocols, vless, vmess, socks, proxyBound, protocolsAll, Map.of());
         }
 
         public CreateUserResponse {
-            protocolsAll = protocolsAll == null ? Map.of() : Map.copyOf(protocolsAll);
+            protocolsAll = protocolsAll == null
+                    ? Map.of()
+                    : Collections.unmodifiableMap(new LinkedHashMap<>(protocolsAll));
+            protocolInfo = protocolInfo == null
+                    ? Map.of()
+                    : Collections.unmodifiableMap(new LinkedHashMap<>(protocolInfo));
         }
     }
 
