@@ -113,6 +113,17 @@ BEGIN
         SELECT 1
         FROM information_schema.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'residential_allocations'
+          AND COLUMN_NAME = 'protocol_info_cipher'
+    ) THEN
+        ALTER TABLE `residential_allocations`
+            ADD COLUMN `protocol_info_cipher` LONGTEXT NULL;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
           AND TABLE_NAME = 'managed_nodes'
           AND COLUMN_NAME = 'socks_inbound_port'
     ) THEN
@@ -150,5 +161,6 @@ DELIMITER ;
 -- Verification (read-only):
 -- SHOW COLUMNS FROM `residential_allocations` LIKE 'proxy_source_port';
 -- SHOW COLUMNS FROM `residential_allocations` LIKE 'protocols_all_cipher';
+-- SHOW COLUMNS FROM `residential_allocations` LIKE 'protocol_info_cipher';
 -- SHOW COLUMNS FROM `managed_nodes` LIKE 'socks_inbound_port';
 -- SHOW INDEX FROM `residential_allocations`;

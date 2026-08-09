@@ -428,6 +428,38 @@ class ProvisioningServiceIntegrationTest {
     }
 
     @Test
+    void proxyBatchParsesSocksUriCredentialsWithoutTreatingPlusAsSpace() {
+        saveOnlineNode("node-socks-uri", 10);
+        when(nodeManagerClient.createUser(any(), any(), any())).thenAnswer(invocation -> {
+            CreateUserRequest request = invocation.getArgument(1);
+            return residentialSuccessResponse(request.userId());
+        });
+
+        // The URI contains reserved characters in both credentials.  `%2B`
+        // must decode to a literal plus, never to a space (URLDecoder's form
+        // semantics), and the fragment carries the separate residential exit
+        // IP used for GeoIP/display only.
+        var response = provisioningService.provisionProxyBatch(
+                "batch-socks-uri",
+                new ProxyProvisionRequest(
+                        "socks://user_name:p%2Ba%3Ass%2Fword%3D@198.51.100.20:1080#%5BUS%5D%20203.0.113.10",
+                        List.of("socks"), null, "socks-uri"));
+
+        assertThat(response.results().getFirst().error()).as("proxy URI parse/provision error").isNull();
+        assertThat(response.succeeded()).isEqualTo(1);
+        assertThat(response.failed()).isZero();
+        assertThat(response.results().getFirst().sourceIp()).isEqualTo("203.0.113.10");
+        ArgumentCaptor<CreateUserRequest> requestCaptor = ArgumentCaptor.forClass(CreateUserRequest.class);
+        verify(nodeManagerClient).createUser(any(), requestCaptor.capture(), any());
+        CreateUserRequest request = requestCaptor.getValue();
+        assertThat(request.userId()).isEqualTo("user_name");
+        assertThat(request.proxy().server()).isEqualTo("198.51.100.20");
+        assertThat(request.proxy().port()).isEqualTo(1080);
+        assertThat(request.proxy().username()).isEqualTo("user_name");
+        assertThat(request.proxy().password()).isEqualTo("p+a:ss/word=");
+    }
+
+    @Test
     void geoIpFailureFallsBackWithoutBlockingResidentialProvisioning() {
         saveOnlineNode("node-a", 10);
         when(ipCountryResolver.resolve("198.51.100.88"))

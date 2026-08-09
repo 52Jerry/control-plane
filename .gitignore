@@ -1,6 +1,7 @@
 .env.local
 /backend/src/main/resources/application.yml
 backend/data/
+data/
 backend/target/
 frontend/node_modules/
 frontend/dist/

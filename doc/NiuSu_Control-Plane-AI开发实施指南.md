@@ -14,7 +14,7 @@
 **每一步做什么：**
 1. 确认 JDK 17+、Maven、Node 18+ 已安装。
    - 命令：`java -version`、`mvn -v`、`node -v`
-2. 确认 `.env.local` 存在且连接阿里云 RDS（`rm-bp1gq2po14z29s0kxuo.mysql.rds.aliyuncs.com:3306/control-plane`）。
+2. 确认 `.env.local` 存在且连接配置的生产 RDS（具体主机名只保存在本地忽略文件或服务器环境变量中）。
    - 不存在则复制 `.env.local.example` 并填写；**不要提交 Git**。
 3. 确认 `CONTROL_PLANE_ENCRYPTION_KEY` 与线上一致（否则历史密文无法解密）。
 4. 本地启动后端：IDEA 运行 `NodeControlApplication`，或 `mvn spring-boot:run`。

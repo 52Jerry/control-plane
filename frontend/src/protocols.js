@@ -23,9 +23,30 @@ function utf8Base64(valueToEncode) {
 }
 
 function socksAuth(valueToEncode) {
-  const username = String(valueToEncode?.username ?? '')
+  const username = publicSocksUsername(valueToEncode?.username)
   const password = String(valueToEncode?.password ?? '')
   return `${encode(username)}:${encode(password)}`
+}
+
+// Older Node Manager installations exposed the internal VLESS/VMess auth
+// alias as the public SOCKS username (for example
+// ``node-manager:<user-id>``).  Keep accepting those historical payloads,
+// but never emit the internal prefix in a link that is copied to a client.
+function publicSocksUsername(rawUsername) {
+  const original = String(rawUsername ?? '')
+  // Older structured responses sometimes URL-encoded the internal alias as
+  // `node-manager%3A<id>`.  Decode only for the prefix check; ordinary
+  // usernames must remain byte-for-byte unchanged (including literal `%`).
+  let username = original
+  try {
+    const decoded = decodeURIComponent(original)
+    if (decoded.startsWith('node-manager:')) username = decoded
+  } catch {
+    // Keep the original value when it is not valid percent-encoding.
+  }
+  return username.startsWith('node-manager:')
+    ? username.slice('node-manager:'.length)
+    : original
 }
 
 function base64Json(valueToEncode) {

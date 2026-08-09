@@ -1013,7 +1013,11 @@ public class ProvisioningService {
             return new ProxyRowParseResult(rowNumber, null, null, null, null, null,
                     "第 " + rowNumber + " 行 socks:// 链接端口不合法");
         }
-        String userInfo = uri.getUserInfo();
+        // Read the raw user-info so that `+` remains a literal plus sign.
+        // URLDecoder follows application/x-www-form-urlencoded rules and
+        // would otherwise turn a valid SOCKS password such as `a+b` into
+        // `a b`, causing authentication to fail.
+        String userInfo = uri.getRawUserInfo();
         String username;
         String password;
         if (userInfo == null || userInfo.isBlank()) {
@@ -1023,11 +1027,11 @@ public class ProvisioningService {
         int colon = userInfo.indexOf(':');
         try {
             if (colon < 0) {
-                username = java.net.URLDecoder.decode(userInfo, java.nio.charset.StandardCharsets.UTF_8);
+                username = decodeUriComponent(userInfo);
                 password = "";
             } else {
-                username = java.net.URLDecoder.decode(userInfo.substring(0, colon), java.nio.charset.StandardCharsets.UTF_8);
-                password = java.net.URLDecoder.decode(userInfo.substring(colon + 1), java.nio.charset.StandardCharsets.UTF_8);
+                username = decodeUriComponent(userInfo.substring(0, colon));
+                password = decodeUriComponent(userInfo.substring(colon + 1));
             }
         } catch (IllegalArgumentException ex) {
             return new ProxyRowParseResult(rowNumber, null, null, null, null, null,
@@ -1037,7 +1041,7 @@ public class ProvisioningService {
         String sourceIp = null;
         String fragment = uri.getFragment();
         if (fragment != null && !fragment.isBlank()) {
-            String decodedFragment = java.net.URLDecoder.decode(fragment, java.nio.charset.StandardCharsets.UTF_8);
+            String decodedFragment = decodeUriComponent(uri.getRawFragment());
             java.util.regex.Matcher m = java.util.regex.Pattern
                     .compile("(\\d{1,3}(?:\\.\\d{1,3}){3})").matcher(decodedFragment);
             if (m.find()) {
@@ -1057,6 +1061,21 @@ public class ProvisioningService {
         } catch (IllegalArgumentException ex) {
             return new ProxyRowParseResult(rowNumber, sourceIp, host, host, port, null, ex.getMessage());
         }
+    }
+
+    /**
+     * Decode a URI component without applying HTML form semantics. In URI
+     * user-info and fragments, a literal '+' is data, not a space. Replacing
+     * it with its percent form before using the JDK decoder preserves that
+     * distinction while still decoding UTF-8 and percent-encoded delimiters.
+     */
+    private static String decodeUriComponent(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        return java.net.URLDecoder.decode(
+                raw.replace("+", "%2B"),
+                java.nio.charset.StandardCharsets.UTF_8);
     }
 
     private ParsedProxyRow parsedRow(int rowNumber,
