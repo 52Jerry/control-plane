@@ -39,6 +39,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -132,14 +133,13 @@ public class ProvisioningService {
             }
             ParsedProxyRow row = parsed.row();
             try {
-                if (row.directSocksFormat() && request.preferredNodeId() == null) {
-                    throw new IllegalArgumentException("第 " + row.rowNumber()
-                            + " 行四列简写必须指定节点管理器");
-                }
                 String userId = normalizeBatchUserId(row.username(), batchKey, row.rowNumber());
                 String rowKey = rowRequestKey(batchKey, row.rowNumber());
+                CountryInfo country = resolveCountry(row.sourceIp());
                 ProxyConfig proxy = new ProxyConfig(
-                        "socks5", row.server(), row.port(), row.username(), row.password());
+                        "socks5", row.server(), row.port(), row.username(), row.password(),
+                        row.sourceIp(),
+                        country.code(), country.name(), null);
                 ProvisionRequest provisionRequest = new ProvisionRequest(
                         userId, RESIDENTIAL_PROTOCOLS, request.preferredNodeId());
                 ProxyRequestHash hashInput = new ProxyRequestHash(
@@ -381,7 +381,8 @@ public class ProvisioningService {
             node = selectNode(request.preferredNodeId(), proxy, proxyServerAddresses);
         } else if (!isAllocatable(node)) {
             throw new IllegalStateException("该分配首次选中的节点当前不可用，请恢复节点后重试");
-        } else if (wouldProxyLoopThroughNode(node, proxy, proxyServerAddresses)) {
+        } else if (wouldProxyLoopThroughNode(node, proxy, proxyServerAddresses)
+                && !hasExplicitAccessIp(proxy)) {
             if (request.preferredNodeId() != null) {
                 throw proxyLoopException(true);
             }
@@ -408,6 +409,28 @@ public class ProvisioningService {
                                    ProxyConfig proxy,
                                    Set<String> proxyServerAddresses) {
         List<ManagedNode> nodes = nodeRepository.findAllocatableNodesForUpdate();
+        // Rule 1: if the user supplied a SOCKS access IP (5-column / residential mode),
+        // ignore the dropdown selection and auto-match the node whose host equals that IP.
+        // If no matching node exists, fail immediately — the access IP must correspond
+        // to a known node in Control Plane.
+        // For 4-column format, server == sourceIp, so we skip auto-match.
+        if (proxy != null && proxy.server() != null && !proxy.server().isBlank()
+                && proxy.sourceIp() != null && !proxy.sourceIp().isBlank()
+                && !proxy.server().equals(proxy.sourceIp())) {
+            String accessIp = canonicalIp(normalizeServerHost(proxy.server()));
+            if (accessIp != null) {
+                return nodes.stream()
+                        .filter(node -> {
+                            String nodeHost = node.getHost() == null ? null : canonicalIp(normalizeServerHost(node.getHost()));
+                            return accessIp.equals(nodeHost) && hasCapacity(node);
+                        })
+                        .findFirst()
+                        .orElseThrow(() -> new IllegalStateException(
+                                "SOCKS 接入地址 " + proxy.server() + " 未在控制中心注册，请先添加该节点"));
+            }
+        }
+        // Rule 2: no access IP supplied — use the preferred node from the dropdown,
+        // or fall back to random selection among capacity nodes.
         if (preferredNodeId != null) {
             nodes = nodes.stream().filter(node -> node.getId().equals(preferredNodeId)).toList();
             if (nodes.isEmpty()) {
@@ -417,18 +440,11 @@ public class ProvisioningService {
                 throw proxyLoopException(true);
             }
         }
-        List<ManagedNode> capacityNodes = nodes.stream()
+        return nodes.stream()
                 .filter(this::hasCapacity)
-                .toList();
-        return capacityNodes.stream()
                 .filter(node -> !wouldProxyLoopThroughNode(node, proxy, proxyServerAddresses))
                 .findFirst()
-                .orElseThrow(() -> {
-                    if (!capacityNodes.isEmpty() && proxy != null && !proxyServerAddresses.isEmpty()) {
-                        return proxyLoopException(false);
-                    }
-                    return new IllegalStateException("没有在线且有剩余容量的节点管理器");
-                });
+                .orElseThrow(() -> new IllegalStateException("没有在线且有剩余容量的节点管理器"));
     }
 
     private Set<String> resolveProxyServerAddresses(ProxyConfig proxy) {
@@ -448,6 +464,13 @@ public class ProvisioningService {
                 .filter(value -> value != null && isIpLiteral(value))
                 .map(this::canonicalIp)
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    private boolean hasExplicitAccessIp(ProxyConfig proxy) {
+        return proxy != null
+                && proxy.server() != null && !proxy.server().isBlank()
+                && proxy.sourceIp() != null && !proxy.sourceIp().isBlank()
+                && !proxy.server().equals(proxy.sourceIp());
     }
 
     private boolean wouldProxyLoopThroughNode(ManagedNode node,
@@ -700,12 +723,16 @@ public class ProvisioningService {
         AllocationView result = transactionTemplate.execute(status -> {
             ResidentialAllocation allocation = allocationRepository.findLockedById(allocationId)
                     .orElseThrow(() -> new NoSuchElementException("分配记录不存在"));
+            Map<String, Object> protocolInfoToSave = response.protocolInfo();
+            if ("UPSTREAM_SOCKS".equals(allocation.getProvisioningMode())) {
+                protocolInfoToSave = enrichProtocolInfo(protocolInfoToSave, allocation);
+            }
             allocation.complete(
                     response,
                     secretCipher.encrypt(response.vless()),
                     secretCipher.encrypt(response.vmess()),
                     encryptProtocolsAll(response.protocolsAll()),
-                    encryptProtocolInfo(response.protocolInfo()),
+                    encryptProtocolInfo(protocolInfoToSave),
                     response.socks() == null ? null : secretCipher.encrypt(response.socks().username()),
                     response.socks() == null ? null : secretCipher.encrypt(response.socks().password()));
             allocationRepository.save(allocation);
@@ -776,6 +803,9 @@ public class ProvisioningService {
                     secretCipher.decrypt(allocation.getSocksPasswordCipher()));
             Map<String, String> protocolsAll = decryptProtocolsAll(allocation.getProtocolsAllCipher());
             Map<String, Object> protocolInfo = decryptProtocolInfo(allocation.getProtocolInfoCipher());
+            if ("UPSTREAM_SOCKS".equals(allocation.getProvisioningMode())) {
+                protocolInfo = enrichProtocolInfo(protocolInfo, allocation);
+            }
             connection = new UserConnection(
                     true,
                     allocation.getRemoteUserId(),
@@ -846,6 +876,48 @@ public class ProvisioningService {
         }
     }
 
+    /**
+     * 为住宅（上游 SOCKS）分配补全原始链接所需参数，并修正加速地址。
+     *
+     * Node Manager 返回的 protocolInfo 只有一套 ip/username/password（源自节点本地
+     * 配置），无法同时满足两类语义：原始链接（SOCKS5 原始 / BitBrowser）应使用住宅
+     * 出口 IP + 上游代理凭据，加速链接应指向节点记录的真实地址。此处把这两类数据
+     * 显式拆分注入，供前端本地拼接。
+     */
+    private Map<String, Object> enrichProtocolInfo(Map<String, Object> protocolInfo,
+                                                   ResidentialAllocation allocation) {
+        Map<String, Object> enriched = new LinkedHashMap<>();
+        if (protocolInfo != null) {
+            enriched.putAll(protocolInfo);
+        }
+        // 原始链接：住宅出口 IP + 上游端口/凭据（sourceIp/rawUsername/rawPassword/rawPort）
+        if (allocation.getProxySourceIp() != null) {
+            enriched.put("sourceIp", allocation.getProxySourceIp());
+        }
+        if (allocation.getProxyPort() != null) {
+            enriched.put("rawPort", allocation.getProxyPort());
+        }
+        String rawUsername = secretCipher.decrypt(allocation.getProxyUsernameCipher());
+        String rawPassword = secretCipher.decrypt(allocation.getProxyPasswordCipher());
+        if (rawUsername != null) {
+            enriched.put("rawUsername", rawUsername);
+        }
+        if (rawPassword != null) {
+            enriched.put("rawPassword", rawPassword);
+        }
+        // 加速链接：VLESS/VMess/SOCKS 加速链接连接的是节点服务器上 sing-box 的
+        // 入站端口，因此 accelerationDomain 必须是节点服务器的 host（如 108.61.246.231），
+        // 而不是上游 SOCKS 的地址（proxyServer）。Node Manager 已经返回了正确的
+        // accelerationDomain（其自身 host），此处仅在缺失时用节点 host 补全。
+        if (enriched.get("accelerationDomain") == null) {
+            ManagedNode node = allocation.getNode();
+            if (node != null && node.getHost() != null && !node.getHost().isBlank()) {
+                enriched.put("accelerationDomain", node.getHost());
+            }
+        }
+        return enriched;
+    }
+
     private List<ProxyRowParseResult> parseProxyRows(String input) {
         if (input == null || input.isBlank()) {
             throw new IllegalArgumentException("请输入 SOCKS 节点信息");
@@ -861,6 +933,11 @@ public class ProvisioningService {
                 continue;
             }
             int rowNumber = lineIndex + 1;
+            // 先尝试 socks:// / socks5:// URL 格式
+            if (line.startsWith("socks://") || line.startsWith("socks5://")) {
+                rows.add(parseSocksUrl(rowNumber, line));
+                continue;
+            }
             String[] columns = line.split("\\s+");
             boolean indexed = columns.length == 6;
             boolean shortFormat = columns.length == 4;
@@ -892,6 +969,75 @@ public class ProvisioningService {
             throw new IllegalArgumentException("单次最多生成 50 个节点用户");
         }
         return rows;
+    }
+
+    private ProxyRowParseResult parseSocksUrl(int rowNumber, String line) {
+        URI uri;
+        try {
+            uri = URI.create(line);
+        } catch (IllegalArgumentException ex) {
+            return new ProxyRowParseResult(rowNumber, null, null, null, null, null,
+                    "第 " + rowNumber + " 行 socks:// 链接格式不合法：" + ex.getMessage());
+        }
+        String scheme = uri.getScheme();
+        if (!"socks".equalsIgnoreCase(scheme) && !"socks5".equalsIgnoreCase(scheme)) {
+            return new ProxyRowParseResult(rowNumber, null, null, null, null, null,
+                    "第 " + rowNumber + " 行协议不支持，仅支持 socks:// 或 socks5://");
+        }
+        String host = uri.getHost();
+        int port = uri.getPort();
+        if (host == null || host.isBlank()) {
+            return new ProxyRowParseResult(rowNumber, null, null, null, null, null,
+                    "第 " + rowNumber + " 行 socks:// 链接缺少 host");
+        }
+        if (port <= 0 || port > 65535) {
+            return new ProxyRowParseResult(rowNumber, null, null, null, null, null,
+                    "第 " + rowNumber + " 行 socks:// 链接端口不合法");
+        }
+        String userInfo = uri.getUserInfo();
+        String username;
+        String password;
+        if (userInfo == null || userInfo.isBlank()) {
+            return new ProxyRowParseResult(rowNumber, null, null, null, null, null,
+                    "第 " + rowNumber + " 行 socks:// 链接缺少账号密码（user:pass）");
+        }
+        int colon = userInfo.indexOf(':');
+        try {
+            if (colon < 0) {
+                username = java.net.URLDecoder.decode(userInfo, java.nio.charset.StandardCharsets.UTF_8);
+                password = "";
+            } else {
+                username = java.net.URLDecoder.decode(userInfo.substring(0, colon), java.nio.charset.StandardCharsets.UTF_8);
+                password = java.net.URLDecoder.decode(userInfo.substring(colon + 1), java.nio.charset.StandardCharsets.UTF_8);
+            }
+        } catch (IllegalArgumentException ex) {
+            return new ProxyRowParseResult(rowNumber, null, null, null, null, null,
+                    "第 " + rowNumber + " 行 socks:// 链接账号密码 URL 解码失败：" + ex.getMessage());
+        }
+        // 从 fragment（# 后内容）中提取出口 IP，例如：#%5BUS%5D%20150.241.188.77 → [US] 150.241.188.77
+        String sourceIp = null;
+        String fragment = uri.getFragment();
+        if (fragment != null && !fragment.isBlank()) {
+            String decodedFragment = java.net.URLDecoder.decode(fragment, java.nio.charset.StandardCharsets.UTF_8);
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("(\\d{1,3}(?:\\.\\d{1,3}){3})").matcher(decodedFragment);
+            if (m.find()) {
+                sourceIp = m.group(1);
+            }
+        }
+        try {
+            ParsedProxyRow row;
+            if (sourceIp != null && !sourceIp.equals(host)) {
+                // 有独立出口 IP → 5 列格式：sourceIp(出口) + server(host入口)
+                row = parsedRow(rowNumber, sourceIp, host, String.valueOf(port), username, password, false);
+            } else {
+                // 4 列简写：host 既是接入地址，也是默认 sourceIp（之后走节点）
+                row = parsedRow(rowNumber, host, host, String.valueOf(port), username, password, true);
+            }
+            return new ProxyRowParseResult(rowNumber, row.sourceIp(), row.sourceAddress(), row.server(), row.port(), row, null);
+        } catch (IllegalArgumentException ex) {
+            return new ProxyRowParseResult(rowNumber, sourceIp, host, host, port, null, ex.getMessage());
+        }
     }
 
     private ParsedProxyRow parsedRow(int rowNumber,
@@ -1061,7 +1207,9 @@ public class ProvisioningService {
                 allocation.getProxyServer(),
                 allocation.getProxyPort(),
                 secretCipher.decrypt(allocation.getProxyUsernameCipher()),
-                secretCipher.decrypt(allocation.getProxyPasswordCipher()));
+                secretCipher.decrypt(allocation.getProxyPasswordCipher()),
+                allocation.getProxySourceIp(),
+                null, null, null);
     }
 
     private ProxyProvisionResult toProxyResult(ParsedProxyRow row,

@@ -39,17 +39,23 @@ function port(data, key, fallback) {
 }
 
 export function buildSocks5Original(data) {
-  if (!data || !value(data, 'rawProtocol') || !value(data, 'username') || !value(data, 'password')) return ''
+  const username = value(data, 'rawUsername') || value(data, 'username')
+  const password = value(data, 'rawPassword') || value(data, 'password')
+  if (!data || !value(data, 'rawProtocol') || !username || !password) return ''
   const targetPort = port(data, 'rawPort', value(data, 'port', 0))
-  if (!targetPort || !value(data, 'ip')) return ''
-  return `socks://${encode(value(data, 'username'))}:${encode(value(data, 'password'))}@${host(value(data, 'ip'))}:${targetPort}#${encode(`${value(data, 'countryCode', 'XX')}-${value(data, 'ip')}`)}`
+  const hostValue = value(data, 'sourceIp') || value(data, 'ip')
+  if (!targetPort || !hostValue) return ''
+  return `socks://${encode(username)}:${encode(password)}@${host(hostValue)}:${targetPort}#${encode(`${value(data, 'countryCode', 'XX')}-${hostValue}`)}`
 }
 
 export function buildBitBrowser(data) {
-  if (!data || !value(data, 'rawProtocol') || !value(data, 'username') || !value(data, 'password')) return ''
+  const username = value(data, 'rawUsername') || value(data, 'username')
+  const password = value(data, 'rawPassword') || value(data, 'password')
+  if (!data || !value(data, 'rawProtocol') || !username || !password) return ''
   const targetPort = port(data, 'rawPort', value(data, 'port', 0))
-  if (!targetPort || !value(data, 'ip')) return ''
-  return `${value(data, 'ip')}:${targetPort}:${value(data, 'username')}:${value(data, 'password')}`
+  const hostValue = value(data, 'sourceIp') || value(data, 'ip')
+  if (!targetPort || !hostValue) return ''
+  return `${hostValue}:${targetPort}:${username}:${password}`
 }
 
 export function buildVless(data) {
@@ -76,7 +82,7 @@ export function buildVless(data) {
 export function buildSocksAcceleration(data) {
   if (!data || !value(data, 'accelerationDomain') || !value(data, 'username') || !value(data, 'password')) return ''
   const targetPort = port(data, 'accelerationPortSocks', 5001)
-  return `socks://${utf8Base64(value(data, 'username'))}:${utf8Base64(value(data, 'password'))}@${host(value(data, 'accelerationDomain'))}:${targetPort}#${remark(data)}`
+  return `socks://${encode(value(data, 'username'))}:${encode(value(data, 'password'))}@${host(value(data, 'accelerationDomain'))}:${targetPort}#${remark(data)}`
 }
 
 export function buildVmess(data) {

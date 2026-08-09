@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
-  Activity, Clipboard, CloudCog, Copy, Database, Eye, EyeOff, Gauge, Link, LogOut, Plus, Power,
+  Activity, AlertTriangle, Clipboard, CloudCog, Copy, Database, Eye, EyeOff, Gauge, Link, LogOut, Plus, Power,
   RefreshCw, RotateCw, Search, Server, Settings2, ShieldCheck, Trash2, UserCog, Users,
   Wrench, X,
 } from 'lucide-vue-next'
@@ -94,6 +94,17 @@ const installRemainingSeconds = computed(() => {
   return Math.max(0, Math.ceil((new Date(installExpiresAt.value).getTime() - installNow.value) / 1000))
 })
 const installExpired = computed(() => Boolean(installExpiresAt.value) && installRemainingSeconds.value <= 0)
+const proxyOriginalSocksLink = computed(() => {
+  const d = proxyCredentialData.value
+  if (!d || !d.protocolInfo || d.protocolInfo.rawProtocol !== 'socks5') return ''
+  const username = d.proxyUsername || d.protocolInfo.rawUsername || ''
+  const password = d.proxyPassword || d.protocolInfo.rawPassword || ''
+  const host = d.sourceIp || d.protocolInfo.sourceIp || ''
+  const port = d.protocolInfo.rawPort || d.proxyPort || 0
+  if (!username || !host || !port) return ''
+  const enc = (s) => encodeURIComponent(String(s))
+  return `socks://${enc(username)}:${enc(password)}@${host}:${port}`
+})
 
 function notify(message, type = 'success') {
   clearTimeout(toastTimer)
@@ -652,13 +663,24 @@ function connectionLinks(connection) {
   }
   const generated = Object.entries(connection.protocolsAll || {})
     .filter(([, value]) => value)
-    .map(([key, value]) => ({ protocol: labels[key] || key, value }))
+    .map(([key, value]) => ({ key, protocol: labels[key] || key, value }))
   if (generated.length > 0) return generated
   return [
-    connection.vless ? { protocol: 'VLESS', value: connection.vless } : null,
-    connection.vmess ? { protocol: 'VMess', value: connection.vmess } : null,
-    connection.socks ? { protocol: 'SOCKS', value: socksUri(connection.socks) } : null,
+    connection.vless ? { key: 'vless', protocol: 'VLESS', value: connection.vless } : null,
+    connection.vmess ? { key: 'vmess', protocol: 'VMess', value: connection.vmess } : null,
+    connection.socks ? { key: 'socks', protocol: 'SOCKS', value: socksUri(connection.socks) } : null,
   ].filter(Boolean)
+}
+
+function protocolHint(key) {
+  const hints = {
+    socks5: '直接代理，可用于 v2rayN/Clash 等客户端',
+    bitbrowser: 'BitBrowser 专用格式',
+    vless: '节点 VLESS 入站，节点 IP + Reality 配置，本地电脑可用',
+    socksAcceleration: '节点 SOCKS 入站，在 v2rayN/Clash 本地电脑直接可用',
+    vmess: '节点 VMess 入站，节点 IP + 本地电脑可用',
+  }
+  return hints[key] || ''
 }
 
 function batchConnectionLinks(result) {
@@ -1110,11 +1132,12 @@ onBeforeUnmount(() => {
         </div>
         <div class="proxy-batch-body">
           <div class="format-guide">
-            <code>四列简写：SOCKS 地址 端口 用户名 密码（需选择指定节点管理器）</code>
-            <strong>支持三种格式</strong>
+            <code>四列简写：SOCKS 地址 端口 用户名 密码</code>
+            <strong>支持四种格式</strong>
             <code>住宅出口IP SOCKS接入地址 端口 用户名 密码</code>
             <code>序号 住宅出口IP SOCKS接入地址 端口 用户名 密码</code>
-            <span>SOCKS 接入地址支持 IP 或域名；没有独立接入地址时填写 <code>-</code>，系统将使用住宅出口 IP。使用空格或 Tab 分隔，粘贴时自动清理 WPS/Excel 表格中的字节序标记、不换行空格和全角空格。</span>
+            <code>socks(s5)://账号:密码@接入地址:端口#[出口IP或备注]</code>
+            <span>SOCKS 接入地址支持 IP 或域名；没有独立接入地址时填写 <code>-</code>，系统将使用住宅出口 IP。使用空格或 Tab 分隔，粘贴时自动清理 WPS/Excel 表格中的字节序标记、不换行空格和全角空格。socks:// 链接会自动从 <code>#备注</code> 中提取第一个 IPv4 作为出口 IP。</span>
           </div>
           <label class="proxy-input-label">批量 SOCKS 节点
             <textarea
@@ -1129,7 +1152,7 @@ onBeforeUnmount(() => {
             ></textarea>
           </label>
           <div class="batch-options">
-            <label>指定节点管理器（四列简写必选）
+            <label>指定节点管理器（可选）
               <select v-model="proxyBatchForm.preferredNodeId"><option value="">自动选择最空闲节点</option><option v-for="node in allocatableNodes" :key="node.id" :value="node.id">{{ node.name }} · {{ node.userCount }}/{{ node.maxUsers }}</option></select>
             </label>
             <div class="fixed-protocols"><span>按出口模式生成协议</span><strong>VLESS</strong><strong>VMess</strong><strong>SOCKS</strong><small>有住宅 SOCKS 时返回五种协议；无住宅时仅返回三种 Node Manager 直出加速链接</small></div>
@@ -1155,13 +1178,20 @@ onBeforeUnmount(() => {
                 <div class="residential-route-summary">
                   <div><span>住宅出口 IP</span><strong>{{ result.sourceIp || '-' }}</strong></div>
                   <div><span>国家 / 代码</span><strong>{{ result.countryName || '未知' }} / {{ result.countryCode || 'ZZ' }}</strong></div>
-                  <div><span>上游 SOCKS</span><strong>{{ result.sourceAddress || '-' }}:{{ result.sourcePort || '-' }}</strong></div>
+                  <div><span>上游 SOCKS 接入</span><strong>{{ result.sourceAddress || '-' }}:{{ result.sourcePort || '-' }}</strong></div>
                   <div><span>节点用户</span><strong>{{ result.allocation?.userId || '-' }}</strong></div>
-                  <div><span>节点入口</span><strong>VLESS / VMess / SOCKS</strong></div>
+                  <div><span>节点入口 (VLESS/VMess)</span><strong>{{ result.allocation?.proxyServer || result.allocation?.nodeHost || '-' }}</strong></div>
+                  <div><span>分配节点</span><strong>{{ result.allocation?.nodeName || '-' }}</strong></div>
+                </div>
+                <div v-if="result.allocation && result.sourceAddress && result.allocation.proxyServer && result.sourceAddress !== result.allocation.proxyServer" class="batch-warning">
+                  <AlertTriangle :size="13" /> SOCKS 接入 IP 与所选节点不一致，已自动使用接入 IP 作为加速入口
                 </div>
                 <div class="batch-links">
-                  <div v-for="linkItem in batchConnectionLinks(result)" :key="linkItem.protocol">
-                    <span>{{ linkItem.protocol }}</span>
+                  <div v-for="linkItem in batchConnectionLinks(result)" :key="linkItem.protocol" :class="['connection-item', linkItem.key === 'socks5' ? 'recommended' : '']">
+                    <div class="connection-label">
+                      <span class="protocol-name">{{ linkItem.protocol }}</span>
+                      <small class="protocol-hint">{{ protocolHint(linkItem.key) }}</small>
+                    </div>
                     <code>{{ revealBatchSecrets ? linkItem.value : maskedLink(linkItem.value) }}</code>
                     <button :title="`复制 ${linkItem.protocol}`" @click="copy(linkItem.value)"><Copy :size="13" /></button>
                   </div>
@@ -1187,7 +1217,7 @@ onBeforeUnmount(() => {
                 <td><div class="user-cell"><span class="avatar">{{ allocation.userId.slice(0, 2).toUpperCase() }}</span><span><strong>{{ allocation.userId }}</strong><small>{{ allocation.protocols.join(' / ') }}</small></span></div></td>
                 <td><span class="allocation-state" :class="allocation.state.toLowerCase()">{{ allocationStateText(allocation.state) }}</span><small v-if="allocation.lastError" class="error-detail" :title="localizedErrorMessage(allocation.lastError)">{{ localizedErrorMessage(allocation.lastError) }}</small></td>
                 <td><strong>{{ allocation.nodeName || '-' }}</strong><small class="table-subtext">{{ allocation.nodeHost || '等待节点' }}</small></td>
-                <td><button v-if="allocation.provisioningMode === 'UPSTREAM_SOCKS'" class="link-button" @click="showAllocationProxy(allocation)">上游 SOCKS</button><strong v-else>VPS 直出</strong><small class="table-subtext">{{ allocation.provisioningMode === 'UPSTREAM_SOCKS' ? `${allocation.proxyServer || '-'}:${allocation.proxyPort || '-'}` : (allocation.nodeHost || '等待选择节点') }}</small></td>
+                <td><button v-if="allocation.provisioningMode === 'UPSTREAM_SOCKS'" class="link-button" @click="showAllocationProxy(allocation)">上游 SOCKS</button><strong v-else>VPS 直出</strong><small class="table-subtext">{{ allocation.provisioningMode === 'UPSTREAM_SOCKS' ? `住宅:${allocation.sourceIp || '-'} · 入口:${allocation.nodeHost || '-'}` : (allocation.nodeHost || '等待选择节点') }}</small></td>
                 <td>{{ formatDate(allocation.createdAt) }}</td>
                 <td><div class="row-actions"><button v-if="allocation.state === 'ACTIVE' && canViewSensitive" class="icon-action" title="查看连接" @click="showAllocationConnection(allocation)"><Link :size="14" />连接</button><button v-if="['RETRYABLE','FAILED','PENDING'].includes(allocation.state) && canProvision" class="icon-action" :disabled="loading.action" title="重新开通" @click="retryAllocation(allocation)"><RefreshCw :size="14" />重试</button></div></td>
               </tr>
@@ -1414,11 +1444,14 @@ onBeforeUnmount(() => {
     <div v-if="modal.connection" class="modal-backdrop" @mousedown.self="closeConnectionModal">
       <div class="modal-card connection-card">
         <div class="modal-heading"><div><p class="eyebrow">连接信息</p><h2>{{ connectionUser }}</h2></div><button class="close-button" title="关闭" @click="closeConnectionModal"><X :size="17" /></button></div>
-        <div v-if="connectionContext" class="connection-context"><span><Server :size="13" />{{ connectionContext.nodeName }} · {{ connectionContext.nodeHost }}</span><span><ShieldCheck :size="13" />{{ connectionData?.proxyBound ? '已绑定上游代理' : 'VPS 直出，未绑定上游代理' }}</span></div>
+        <div v-if="connectionContext" class="connection-context"><span><Server :size="13" />{{ connectionContext.nodeName }} · {{ connectionContext.nodeHost }}</span><span v-if="connectionContext.sourceIp">住宅出口: {{ connectionContext.sourceIp }}</span><span><ShieldCheck :size="13" />{{ connectionContext.proxyBound ? '已绑定上游代理' : 'VPS 直出，未绑定上游代理' }}</span></div>
         <label class="reveal-toggle connection-reveal"><input v-model="revealConnectionSecrets" type="checkbox" /><component :is="revealConnectionSecrets ? EyeOff : Eye" :size="14" /><span>{{ revealConnectionSecrets ? '隐藏完整连接' : '显示完整连接' }}</span></label>
         <div v-if="connectionData" class="connection-list">
-          <div v-for="link in connectionLinks(connectionData)" :key="`${link.protocol}-${link.value}`">
-            <span>{{ link.protocol }}</span>
+          <div v-for="link in connectionLinks(connectionData)" :key="`${link.protocol}-${link.value}`" :class="['connection-item', link.key === 'socks5' ? 'recommended' : '']">
+            <div class="connection-label">
+              <span class="protocol-name">{{ link.protocol }}</span>
+              <small class="protocol-hint">{{ protocolHint(link.key) }}</small>
+            </div>
             <code>{{ revealConnectionSecrets ? link.value : maskedLink(link.value) }}</code>
             <button :title="`复制 ${link.protocol}`" @click="copy(link.value)"><Copy :size="14" /></button>
           </div>
@@ -1431,14 +1464,20 @@ onBeforeUnmount(() => {
       <div class="modal-card">
         <div class="modal-heading"><div><p class="eyebrow">出口代理</p><h2>上游 SOCKS 详情</h2></div><button class="close-button" title="关闭" @click="closeProxyDetailsModal"><X :size="17" /></button></div>
         <div v-if="proxyCredentialData" class="detail-list">
-          <div><span>住宅出口 IP</span><strong>{{ proxyCredentialData.sourceIp || '-' }}</strong></div>
-          <div><span>代理服务器</span><strong>{{ proxyCredentialData.proxyServer || proxyCredentialData.sourceAddress || '-' }}</strong></div>
+          <div><span>住宅出口 IP</span><strong>{{ proxyCredentialData.sourceIp || proxyCredentialData.protocolInfo?.sourceIp || '-' }}</strong></div>
+          <div><span>节点入口 IP</span><strong>{{ proxyCredentialData.nodeHost || '-' }}</strong></div>
+          <div><span>上游 SOCKS 接入</span><strong>{{ proxyCredentialData.proxyServer || '-' }}</strong></div>
           <div><span>端口</span><strong>{{ proxyCredentialData.proxyPort || '-' }}</strong></div>
-          <div><span>账号</span><strong>{{ revealProxyCredentials ? (proxyCredentialData.proxyUsername || '-') : '••••••••' }}</strong></div>
-          <div><span>密码</span><strong>{{ revealProxyCredentials ? (proxyCredentialData.proxyPassword || '-') : '••••••••' }}</strong></div>
+          <div><span>上游账号</span><strong>{{ proxyCredentialData.proxyUsername || proxyCredentialData.protocolInfo?.rawUsername || '-' }}</strong></div>
+          <div><span>上游密码</span><strong>{{ revealProxyCredentials ? (proxyCredentialData.proxyPassword || proxyCredentialData.protocolInfo?.rawPassword || '-') : '••••••••' }}</strong></div>
           <div><span>节点用户 ID</span><strong>{{ proxyCredentialData.userId }}</strong></div>
         </div>
         <label class="reveal-toggle connection-reveal"><input v-model="revealProxyCredentials" type="checkbox" /><component :is="revealProxyCredentials ? EyeOff : Eye" :size="14" /><span>{{ revealProxyCredentials ? '隐藏账号密码' : '显示账号密码' }}</span></label>
+        <div v-if="proxyCredentialData?.protocolInfo?.rawProtocol === 'socks5'" class="proxy-original-link">
+          <div class="proxy-original-title"><strong>SOCKS5 原始链接</strong><small>可直接在 v2rayN / Clash 中使用</small></div>
+          <code class="proxy-original-code">{{ proxyOriginalSocksLink }}</code>
+          <button class="button primary" @click="copy(proxyOriginalSocksLink)">复制链接</button>
+        </div>
       </div>
     </div>
 

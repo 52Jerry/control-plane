@@ -166,10 +166,18 @@ public final class RemoteModels {
             @Min(value = 1, message = "代理端口不能小于 1")
             @Max(value = 65535, message = "代理端口不能超过 65535") int port,
             @Size(max = 255, message = "代理用户名不能超过 255 个字符") String username,
-            @Size(max = 255, message = "代理密码不能超过 255 个字符") String password
+            @Size(max = 255, message = "代理密码不能超过 255 个字符") String password,
+            @Size(max = 255) String sourceIp,
+            @Size(max = 8) String countryCode,
+            @Size(max = 255) String countryName,
+            @Size(max = 255) String cityName
     ) {
         public ProxyConfig {
             type = type == null || type.isBlank() ? "socks5" : type;
+        }
+
+        public ProxyConfig(String type, String server, int port, String username, String password) {
+            this(type, server, port, username, password, null, null, null, null);
         }
     }
 
