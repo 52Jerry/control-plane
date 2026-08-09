@@ -1,6 +1,5 @@
 // Build public connection links from Node Manager's structured protocolInfo.
-// Keeping this in one module makes the API contract explicit and avoids
-// persisting complete links or upstream credentials in browser storage.
+// Complete links are derived in memory and are never persisted in browser storage.
 
 function value(data, key, fallback = '') {
   const result = data?.[key]
@@ -8,7 +7,7 @@ function value(data, key, fallback = '') {
 }
 
 function host(valueToFormat) {
-  const raw = String(valueToFormat || '')
+  const raw = String(valueToFormat || '').trim()
   return raw.includes(':') && !raw.startsWith('[') ? `[${raw}]` : raw
 }
 
@@ -21,6 +20,12 @@ function utf8Base64(valueToEncode) {
   let binary = ''
   bytes.forEach((byte) => { binary += String.fromCharCode(byte) })
   return btoa(binary)
+}
+
+function socksAuth(valueToEncode) {
+  const username = String(valueToEncode?.username ?? '')
+  const password = String(valueToEncode?.password ?? '')
+  return `${encode(username)}:${encode(password)}`
 }
 
 function base64Json(valueToEncode) {
@@ -38,24 +43,37 @@ function port(data, key, fallback) {
   return Number.isInteger(number) && number > 0 && number <= 65535 ? number : fallback
 }
 
+function hasRawSocks(data) {
+  if (!data) return false
+  if (value(data, 'rawProtocol') === 'socks5') return true
+  return Boolean(
+    value(data, 'rawServer') || value(data, 'sourceAddress')
+  ) && Boolean(value(data, 'rawPort') || value(data, 'sourcePort'))
+    && Boolean(value(data, 'rawUsername') && value(data, 'rawPassword'))
+}
+
+function rawEndpoint(data) {
+  // sourceIp is the residential exit metadata, not the SOCKS server a
+  // client connects to.  Do not silently turn an exit IP into a dead proxy.
+  const rawHost = value(data, 'rawServer') || value(data, 'sourceAddress')
+  const rawPort = port(data, 'rawPort', value(data, 'sourcePort', 0))
+  return rawHost && rawPort ? { host: rawHost, port: rawPort } : null
+}
+
 export function buildSocks5Original(data) {
   const username = value(data, 'rawUsername') || value(data, 'username')
   const password = value(data, 'rawPassword') || value(data, 'password')
-  if (!data || !value(data, 'rawProtocol') || !username || !password) return ''
-  const targetPort = port(data, 'rawPort', value(data, 'port', 0))
-  const hostValue = value(data, 'sourceIp') || value(data, 'ip')
-  if (!targetPort || !hostValue) return ''
-  return `socks://${encode(username)}:${encode(password)}@${host(hostValue)}:${targetPort}#${encode(`${value(data, 'countryCode', 'XX')}-${hostValue}`)}`
+  const endpoint = rawEndpoint(data)
+  if (!hasRawSocks(data) || !username || !password || !endpoint) return ''
+  return `socks://${socksAuth({ username, password })}@${host(endpoint.host)}:${endpoint.port}#${encode(`${value(data, 'countryCode', 'XX')}-${value(data, 'sourceIp') || endpoint.host}`)}`
 }
 
 export function buildBitBrowser(data) {
   const username = value(data, 'rawUsername') || value(data, 'username')
   const password = value(data, 'rawPassword') || value(data, 'password')
-  if (!data || !value(data, 'rawProtocol') || !username || !password) return ''
-  const targetPort = port(data, 'rawPort', value(data, 'port', 0))
-  const hostValue = value(data, 'sourceIp') || value(data, 'ip')
-  if (!targetPort || !hostValue) return ''
-  return `${hostValue}:${targetPort}:${username}:${password}`
+  const endpoint = rawEndpoint(data)
+  if (!hasRawSocks(data) || !username || !password || !endpoint) return ''
+  return `${endpoint.host}:${endpoint.port}:${username}:${password}`
 }
 
 export function buildVless(data) {
@@ -73,8 +91,6 @@ export function buildVless(data) {
     headerType: value(data, 'vlessHeaderType', 'none'),
     flow: value(data, 'vlessFlow', 'xtls-rprx-vision'),
   })
-  // URLSearchParams encodes '%' in the documented %2F path as %252F. Decode
-  // only that value so the resulting URI remains compatible with sing-box.
   const query = params.toString().replace('spx=%252F', 'spx=%2F')
   return `vless://${value(data, 'uuid')}@${host(value(data, 'accelerationDomain'))}:${targetPort}?${query}#${remark(data)}`
 }
@@ -82,7 +98,11 @@ export function buildVless(data) {
 export function buildSocksAcceleration(data) {
   if (!data || !value(data, 'accelerationDomain') || !value(data, 'username') || !value(data, 'password')) return ''
   const targetPort = port(data, 'accelerationPortSocks', 5001)
-  return `socks://${encode(value(data, 'username'))}:${encode(value(data, 'password'))}@${host(value(data, 'accelerationDomain'))}:${targetPort}#${remark(data)}`
+  // sing-box expects the actual local SOCKS credentials, not Base64 text.
+  // Encode each field independently so v2rayN and other standard clients
+  // import username and password into their separate fields.
+  const auth = socksAuth({ username: value(data, 'username'), password: value(data, 'password') })
+  return `socks://${auth}@${host(value(data, 'accelerationDomain'))}:${targetPort}#${remark(data)}`
 }
 
 export function buildVmess(data) {
@@ -107,10 +127,17 @@ export function buildVmess(data) {
   return `vmess://${base64Json(config)}`
 }
 
-export function buildAllProtocols(data, enabledProtocols = ['vless', 'vmess', 'socks']) {
+export function buildAllProtocols(
+  data,
+  enabledProtocols = ['vless', 'vmess', 'socks'],
+  includeOriginal = false,
+) {
   if (!data) return []
   const links = []
-  if (value(data, 'rawProtocol') === 'socks5') {
+  // Raw residential SOCKS and BitBrowser credentials are only for the
+  // explicit proxy-details view.  Normal connection lists must contain the
+  // three Node Manager acceleration entry points only.
+  if (includeOriginal && hasRawSocks(data)) {
     const original = buildSocks5Original(data)
     const browser = buildBitBrowser(data)
     if (original) links.push({ key: 'socks5', protocol: 'SOCKS5 原始', value: original })
@@ -130,4 +157,3 @@ export function buildAllProtocols(data, enabledProtocols = ['vless', 'vmess', 's
   }
   return links
 }
-

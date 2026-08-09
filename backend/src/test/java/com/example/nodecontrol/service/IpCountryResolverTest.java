@@ -21,14 +21,14 @@ class IpCountryResolverTest {
         ControlPlaneProperties properties = properties();
         IpCountryResolver resolver = new IpCountryResolver(builder.build(), properties);
 
-        server.expect(requestTo("https://get.geojs.io/v1/ip/geo/38.30.216.149.json"))
+        server.expect(requestTo("https://get.geojs.io/v1/ip/geo/203.0.113.10.json"))
                 .andRespond(withSuccess(
-                        "{\"country\":\"United States\",\"country_code\":\"US\",\"ip\":\"38.30.216.149\"}",
+                        "{\"country\":\"United States\",\"country_code\":\"US\",\"ip\":\"203.0.113.10\"}",
                         MediaType.APPLICATION_JSON));
 
-        assertThat(resolver.resolve("38.30.216.149"))
+        assertThat(resolver.resolve("203.0.113.10"))
                 .isEqualTo(new IpCountryResolver.CountryInfo("美国", "US"));
-        assertThat(resolver.resolve("38.30.216.149"))
+        assertThat(resolver.resolve("203.0.113.10"))
                 .isEqualTo(new IpCountryResolver.CountryInfo("美国", "US"));
         server.verify();
     }

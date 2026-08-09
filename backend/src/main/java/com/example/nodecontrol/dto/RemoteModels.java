@@ -152,11 +152,24 @@ public final class RemoteModels {
     public record ProxyDetails(
             String userId,
             boolean proxyBound,
+            String nodeHost,
             String server,
             Integer port,
             String username,
-            String password
+            String password,
+            String sourceIp,
+            String sourceAddress,
+            Integer sourcePort,
+            String countryCode,
+            String countryName,
+            String cityName,
+            Map<String, Object> protocolInfo
     ) {
+        public ProxyDetails {
+            protocolInfo = protocolInfo == null
+                    ? Map.of()
+                    : Collections.unmodifiableMap(new LinkedHashMap<>(protocolInfo));
+        }
     }
 
     public record ProxyConfig(
@@ -168,6 +181,7 @@ public final class RemoteModels {
             @Size(max = 255, message = "代理用户名不能超过 255 个字符") String username,
             @Size(max = 255, message = "代理密码不能超过 255 个字符") String password,
             @Size(max = 255) String sourceIp,
+            @Size(max = 255) String sourceAddress,
             @Size(max = 8) String countryCode,
             @Size(max = 255) String countryName,
             @Size(max = 255) String cityName
@@ -177,7 +191,7 @@ public final class RemoteModels {
         }
 
         public ProxyConfig(String type, String server, int port, String username, String password) {
-            this(type, server, port, username, password, null, null, null, null);
+            this(type, server, port, username, password, null, null, null, null, null);
         }
     }
 
@@ -263,4 +277,3 @@ public final class RemoteModels {
     public record ReloadResponse(boolean success) {
     }
 }
-

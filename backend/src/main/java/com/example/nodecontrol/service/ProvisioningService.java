@@ -59,8 +59,11 @@ public class ProvisioningService {
     private static final List<String> RESIDENTIAL_PROTOCOLS = List.of("vless", "vmess", "socks");
     private static final List<String> DIRECT_PROTOCOL_LINKS = List.of(
             "vless", "socksAcceleration", "vmess");
+    // The normal Node Manager contract returns the three routed acceleration
+    // protocols.  Raw SOCKS5 and BitBrowser are an explicit proxy-details
+    // capability and must not be required for provisioning to succeed.
     private static final List<String> RESIDENTIAL_PROTOCOL_LINKS = List.of(
-            "socks5", "bitbrowser", "vless", "socksAcceleration", "vmess");
+            "vless", "socksAcceleration", "vmess");
 
     private final ResidentialAllocationRepository allocationRepository;
     private final ManagedNodeRepository nodeRepository;
@@ -133,12 +136,16 @@ public class ProvisioningService {
             }
             ParsedProxyRow row = parsed.row();
             try {
+                if (row.directSocksFormat() && request.preferredNodeId() == null) {
+                    throw new IllegalArgumentException("四列简写必须指定节点管理器");
+                }
                 String userId = normalizeBatchUserId(row.username(), batchKey, row.rowNumber());
                 String rowKey = rowRequestKey(batchKey, row.rowNumber());
                 CountryInfo country = resolveCountry(row.sourceIp());
                 ProxyConfig proxy = new ProxyConfig(
                         "socks5", row.server(), row.port(), row.username(), row.password(),
                         row.sourceIp(),
+                        row.sourceAddress(),
                         country.code(), country.name(), null);
                 ProvisionRequest provisionRequest = new ProvisionRequest(
                         userId, RESIDENTIAL_PROTOCOLS, request.preferredNodeId());
@@ -381,8 +388,7 @@ public class ProvisioningService {
             node = selectNode(request.preferredNodeId(), proxy, proxyServerAddresses);
         } else if (!isAllocatable(node)) {
             throw new IllegalStateException("该分配首次选中的节点当前不可用，请恢复节点后重试");
-        } else if (wouldProxyLoopThroughNode(node, proxy, proxyServerAddresses)
-                && !hasExplicitAccessIp(proxy)) {
+        } else if (wouldProxyLoopThroughNode(node, proxy, proxyServerAddresses)) {
             if (request.preferredNodeId() != null) {
                 throw proxyLoopException(true);
             }
@@ -409,28 +415,9 @@ public class ProvisioningService {
                                    ProxyConfig proxy,
                                    Set<String> proxyServerAddresses) {
         List<ManagedNode> nodes = nodeRepository.findAllocatableNodesForUpdate();
-        // Rule 1: if the user supplied a SOCKS access IP (5-column / residential mode),
-        // ignore the dropdown selection and auto-match the node whose host equals that IP.
-        // If no matching node exists, fail immediately — the access IP must correspond
-        // to a known node in Control Plane.
-        // For 4-column format, server == sourceIp, so we skip auto-match.
-        if (proxy != null && proxy.server() != null && !proxy.server().isBlank()
-                && proxy.sourceIp() != null && !proxy.sourceIp().isBlank()
-                && !proxy.server().equals(proxy.sourceIp())) {
-            String accessIp = canonicalIp(normalizeServerHost(proxy.server()));
-            if (accessIp != null) {
-                return nodes.stream()
-                        .filter(node -> {
-                            String nodeHost = node.getHost() == null ? null : canonicalIp(normalizeServerHost(node.getHost()));
-                            return accessIp.equals(nodeHost) && hasCapacity(node);
-                        })
-                        .findFirst()
-                        .orElseThrow(() -> new IllegalStateException(
-                                "SOCKS 接入地址 " + proxy.server() + " 未在控制中心注册，请先添加该节点"));
-            }
-        }
-        // Rule 2: no access IP supplied — use the preferred node from the dropdown,
-        // or fall back to random selection among capacity nodes.
+        // The proxy server is the upstream SOCKS endpoint, not a Node Manager
+        // endpoint.  Node selection is controlled only by preferredNodeId (when
+        // supplied) or by the normal online/capacity selection below.
         if (preferredNodeId != null) {
             nodes = nodes.stream().filter(node -> node.getId().equals(preferredNodeId)).toList();
             if (nodes.isEmpty()) {
@@ -464,13 +451,6 @@ public class ProvisioningService {
                 .filter(value -> value != null && isIpLiteral(value))
                 .map(this::canonicalIp)
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
-    }
-
-    private boolean hasExplicitAccessIp(ProxyConfig proxy) {
-        return proxy != null
-                && proxy.server() != null && !proxy.server().isBlank()
-                && proxy.sourceIp() != null && !proxy.sourceIp().isBlank()
-                && !proxy.server().equals(proxy.sourceIp());
     }
 
     private boolean wouldProxyLoopThroughNode(ManagedNode node,
@@ -844,8 +824,12 @@ public class ProvisioningService {
                 proxyUsername,
                 proxyPassword,
                 allocation.getProxySourceIp(),
-                allocation.getProxySourceDomain(),
-                allocation.getProxySourcePort());
+                allocation.getProxyServer() != null
+                        ? allocation.getProxyServer()
+                        : allocation.getProxySourceDomain(),
+                allocation.getProxyPort() != null
+                        ? allocation.getProxyPort()
+                        : allocation.getProxySourcePort());
     }
 
     private Map<String, String> decryptProtocolsAll(String cipherText) {
@@ -894,8 +878,15 @@ public class ProvisioningService {
         if (allocation.getProxySourceIp() != null) {
             enriched.put("sourceIp", allocation.getProxySourceIp());
         }
+        if (allocation.getProxyServer() != null) {
+            // The raw/original SOCKS connection must use the upstream access
+            // address, while acceleration links use accelerationDomain.
+            enriched.put("sourceAddress", allocation.getProxyServer());
+            enriched.put("rawServer", allocation.getProxyServer());
+        }
         if (allocation.getProxyPort() != null) {
             enriched.put("rawPort", allocation.getProxyPort());
+            enriched.put("sourcePort", allocation.getProxyPort());
         }
         String rawUsername = secretCipher.decrypt(allocation.getProxyUsernameCipher());
         String rawPassword = secretCipher.decrypt(allocation.getProxyPasswordCipher());
@@ -906,16 +897,44 @@ public class ProvisioningService {
             enriched.put("rawPassword", rawPassword);
         }
         // 加速链接：VLESS/VMess/SOCKS 加速链接连接的是节点服务器上 sing-box 的
-        // 入站端口，因此 accelerationDomain 必须是节点服务器的 host（如 108.61.246.231），
+        // 入站端口，因此 accelerationDomain 必须是节点服务器的 host（如 203.0.113.20），
         // 而不是上游 SOCKS 的地址（proxyServer）。Node Manager 已经返回了正确的
         // accelerationDomain（其自身 host），此处仅在缺失时用节点 host 补全。
-        if (enriched.get("accelerationDomain") == null) {
-            ManagedNode node = allocation.getNode();
-            if (node != null && node.getHost() != null && !node.getHost().isBlank()) {
-                enriched.put("accelerationDomain", node.getHost());
-            }
+        ManagedNode node = allocation.getNode();
+        String nodeHost = node == null ? null : normalizeServerHost(node.getHost());
+        String accelerationHost = normalizeServerHost(asString(enriched.get("accelerationDomain")));
+        if (nodeHost != null && (accelerationHost == null || isInvalidAccelerationHost(accelerationHost, allocation))) {
+            enriched.put("accelerationDomain", node.getHost().trim());
+        } else if (accelerationHost != null) {
+            enriched.put("accelerationDomain", accelerationHost);
         }
         return enriched;
+    }
+
+    private String asString(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String text = String.valueOf(value).trim();
+        return text.isBlank() || "null".equalsIgnoreCase(text) ? null : text;
+    }
+
+    private boolean isInvalidAccelerationHost(String candidate, ResidentialAllocation allocation) {
+        return sameHost(candidate, allocation.getProxySourceIp())
+                || sameHost(candidate, allocation.getProxyServer())
+                || sameHost(candidate, allocation.getProxySourceDomain());
+    }
+
+    private boolean sameHost(String left, String right) {
+        String a = normalizeServerHost(left);
+        String b = normalizeServerHost(right);
+        if (a == null || b == null) {
+            return false;
+        }
+        if (isIpLiteral(a) && isIpLiteral(b)) {
+            return canonicalIp(a).equals(canonicalIp(b));
+        }
+        return a.equalsIgnoreCase(b);
     }
 
     private List<ProxyRowParseResult> parseProxyRows(String input) {
@@ -1209,6 +1228,7 @@ public class ProvisioningService {
                 secretCipher.decrypt(allocation.getProxyUsernameCipher()),
                 secretCipher.decrypt(allocation.getProxyPasswordCipher()),
                 allocation.getProxySourceIp(),
+                allocation.getProxyServer(),
                 null, null, null);
     }
 
@@ -1245,9 +1265,10 @@ public class ProvisioningService {
     }
 
     private AllocationView withoutProxyCredentials(AllocationView view) {
-        if (view == null || (view.proxyUsername() == null && view.proxyPassword() == null)) {
+        if (view == null) {
             return view;
         }
+        UserConnection connection = sanitizeConnection(view.connection());
         return new AllocationView(
                 view.id(),
                 view.requestKey(),
@@ -1257,9 +1278,9 @@ public class ProvisioningService {
                 view.nodeId(),
                 view.nodeName(),
                 view.nodeHost(),
-                view.connection(),
-                view.protocolsAll(),
-                view.protocolInfo(),
+                connection,
+                sanitizeProtocolsAll(view.protocolsAll()),
+                sanitizeProtocolInfo(view.protocolInfo()),
                 view.lastError(),
                 view.createdAt(),
                 view.updatedAt(),
@@ -1273,6 +1294,51 @@ public class ProvisioningService {
                 view.sourceIp(),
                 view.sourceAddress(),
                 view.sourcePort());
+    }
+
+    private UserConnection sanitizeConnection(UserConnection connection) {
+        if (connection == null) {
+            return null;
+        }
+        return new UserConnection(
+                connection.success(),
+                connection.userId(),
+                connection.uuid(),
+                connection.protocols(),
+                connection.vless(),
+                connection.vmess(),
+                connection.socks(),
+                connection.proxyBound(),
+                connection.createdAt(),
+                sanitizeProtocolsAll(connection.protocolsAll()),
+                sanitizeProtocolInfo(connection.protocolInfo()));
+    }
+
+    private Map<String, String> sanitizeProtocolsAll(Map<String, String> protocolsAll) {
+        if (protocolsAll == null || protocolsAll.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, String> sanitized = new LinkedHashMap<>();
+        for (String key : DIRECT_PROTOCOL_LINKS) {
+            String value = protocolsAll.get(key);
+            if (hasText(value)) {
+                sanitized.put(key, value);
+            }
+        }
+        return sanitized;
+    }
+
+    private Map<String, Object> sanitizeProtocolInfo(Map<String, Object> protocolInfo) {
+        if (protocolInfo == null || protocolInfo.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> sanitized = new LinkedHashMap<>(protocolInfo);
+        // These fields identify the upstream residential SOCKS endpoint or
+        // carry its credentials.  They are only allowed in the explicit
+        // proxy-details response, never in batch/normal connection payloads.
+        List.of("rawProtocol", "rawServer", "rawPort", "rawUsername", "rawPassword",
+                "sourceAddress", "sourcePort").forEach(sanitized::remove);
+        return sanitized;
     }
 
     private boolean isSuccessfulResidentialResult(ProxyProvisionResult result) {

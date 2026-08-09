@@ -6,7 +6,7 @@ import {
   Wrench, X,
 } from 'lucide-vue-next'
 import { ApiError, api, setUnauthorizedHandler } from './api'
-import { buildAllProtocols } from './protocols'
+import { buildAllProtocols, buildSocks5Original } from './protocols'
 
 const meta = ref({ version: '0.1.0', authRequired: false, passwordLoginEnabled: false })
 const dashboard = ref({ nodeCount: 0, onlineNodeCount: 0, degradedNodeCount: 0, userCount: 0, connections: 0, totalTraffic: 0 })
@@ -95,15 +95,9 @@ const installRemainingSeconds = computed(() => {
 })
 const installExpired = computed(() => Boolean(installExpiresAt.value) && installRemainingSeconds.value <= 0)
 const proxyOriginalSocksLink = computed(() => {
+  if (!revealProxyCredentials.value) return ''
   const d = proxyCredentialData.value
-  if (!d || !d.protocolInfo || d.protocolInfo.rawProtocol !== 'socks5') return ''
-  const username = d.proxyUsername || d.protocolInfo.rawUsername || ''
-  const password = d.proxyPassword || d.protocolInfo.rawPassword || ''
-  const host = d.sourceIp || d.protocolInfo.sourceIp || ''
-  const port = d.protocolInfo.rawPort || d.proxyPort || 0
-  if (!username || !host || !port) return ''
-  const enc = (s) => encodeURIComponent(String(s))
-  return `socks://${enc(username)}:${enc(password)}@${host}:${port}`
+  return d ? buildSocks5Original(d.protocolInfo || d) : ''
 })
 
 function notify(message, type = 'success') {
@@ -644,16 +638,16 @@ function redactBatchError(error, input) {
 
 function socksUri(socks) {
   if (!socks) return ''
-  const host = String(socks.host || '').includes(':') ? `[${socks.host}]` : socks.host
-  const username = encodeURIComponent(socks.username || '')
-  const password = encodeURIComponent(socks.password || '')
-  return `socks5://${username}:${password}@${host}:${socks.port}`
+  const rawHost = String(socks.host || '')
+  const host = rawHost.includes(':') && !rawHost.startsWith('[') ? `[${rawHost}]` : rawHost
+  // Encode username and password independently.  Encoding the complete
+  // ``username:password`` pair as one token makes v2rayN/V2Ray treat it as a
+  // username and leaves the imported password blank.
+  return `socks://${encodeURIComponent(socks.username || '')}:${encodeURIComponent(socks.password || '')}@${host}:${socks.port}`
 }
 
 function connectionLinks(connection) {
   if (!connection) return []
-  const structured = buildAllProtocols(connection.protocolInfo, connection.protocols || ['vless', 'vmess', 'socks'])
-  if (structured.length > 0) return structured
   const labels = {
     socks5: 'SOCKS5 原始',
     bitbrowser: 'BitBrowser',
@@ -661,15 +655,33 @@ function connectionLinks(connection) {
     socksAcceleration: 'SOCKS 加速',
     vmess: 'VMess 加速',
   }
-  const generated = Object.entries(connection.protocolsAll || {})
-    .filter(([, value]) => value)
-    .map(([key, value]) => ({ key, protocol: labels[key] || key, value }))
-  if (generated.length > 0) return generated
+  const structured = buildAllProtocols(
+    connection.protocolInfo,
+    connection.protocols || ['vless', 'vmess', 'socks'],
+    false,
+  )
+  // protocolInfo is the canonical, freshly generated representation. Do not
+  // append historical protocolsAll entries when it is complete: old rows may
+  // contain a residential exit IP, an upstream SOCKS endpoint, or the legacy
+  // node-manager:<id> public username.
+  if (structured.length > 0) return structured
+
+  const links = []
+  Object.entries(connection.protocolsAll || {})
+    .filter(([key, value]) => value && !isLegacyBrokenSocksLink(key, value))
+    .forEach(([key, value]) => links.push({ key, protocol: labels[key] || key, value }))
+  if (links.length > 0) return links
   return [
     connection.vless ? { key: 'vless', protocol: 'VLESS', value: connection.vless } : null,
     connection.vmess ? { key: 'vmess', protocol: 'VMess', value: connection.vmess } : null,
     connection.socks ? { key: 'socks', protocol: 'SOCKS', value: socksUri(connection.socks) } : null,
   ].filter(Boolean)
+}
+
+function isLegacyBrokenSocksLink(key, value) {
+  if (!['socks5', 'socksAcceleration'].includes(key)) return false
+  const text = String(value || '')
+  return text.includes('node-manager:') || text.includes('node-manager%3A')
 }
 
 function protocolHint(key) {
@@ -1146,7 +1158,7 @@ onBeforeUnmount(() => {
               maxlength="50000"
               spellcheck="false"
               autocomplete="off"
-              placeholder="38.30.216.149 198.13.46.231 5001 示例用户名 示例密码&#10;2 198.51.100.11 proxy.example.com 1080 示例用户名 示例密码"
+              placeholder="203.0.113.10 203.0.113.20 5001 示例用户名 示例密码&#10;2 198.51.100.11 proxy.example.com 1080 示例用户名 示例密码"
               @paste="handleProxyPaste"
               @blur="cleanProxyBatchTextarea"
             ></textarea>
@@ -1180,11 +1192,8 @@ onBeforeUnmount(() => {
                   <div><span>国家 / 代码</span><strong>{{ result.countryName || '未知' }} / {{ result.countryCode || 'ZZ' }}</strong></div>
                   <div><span>上游 SOCKS 接入</span><strong>{{ result.sourceAddress || '-' }}:{{ result.sourcePort || '-' }}</strong></div>
                   <div><span>节点用户</span><strong>{{ result.allocation?.userId || '-' }}</strong></div>
-                  <div><span>节点入口 (VLESS/VMess)</span><strong>{{ result.allocation?.proxyServer || result.allocation?.nodeHost || '-' }}</strong></div>
+                <div><span>节点入口 (VLESS/VMess)</span><strong>{{ result.allocation?.nodeHost || '-' }}</strong></div>
                   <div><span>分配节点</span><strong>{{ result.allocation?.nodeName || '-' }}</strong></div>
-                </div>
-                <div v-if="result.allocation && result.sourceAddress && result.allocation.proxyServer && result.sourceAddress !== result.allocation.proxyServer" class="batch-warning">
-                  <AlertTriangle :size="13" /> SOCKS 接入 IP 与所选节点不一致，已自动使用接入 IP 作为加速入口
                 </div>
                 <div class="batch-links">
                   <div v-for="linkItem in batchConnectionLinks(result)" :key="linkItem.protocol" :class="['connection-item', linkItem.key === 'socks5' ? 'recommended' : '']">
@@ -1473,7 +1482,7 @@ onBeforeUnmount(() => {
           <div><span>节点用户 ID</span><strong>{{ proxyCredentialData.userId }}</strong></div>
         </div>
         <label class="reveal-toggle connection-reveal"><input v-model="revealProxyCredentials" type="checkbox" /><component :is="revealProxyCredentials ? EyeOff : Eye" :size="14" /><span>{{ revealProxyCredentials ? '隐藏账号密码' : '显示账号密码' }}</span></label>
-        <div v-if="proxyCredentialData?.protocolInfo?.rawProtocol === 'socks5'" class="proxy-original-link">
+        <div v-if="proxyOriginalSocksLink" class="proxy-original-link">
           <div class="proxy-original-title"><strong>SOCKS5 原始链接</strong><small>可直接在 v2rayN / Clash 中使用</small></div>
           <code class="proxy-original-code">{{ proxyOriginalSocksLink }}</code>
           <button class="button primary" @click="copy(proxyOriginalSocksLink)">复制链接</button>
@@ -1485,4 +1494,3 @@ onBeforeUnmount(() => {
     <div v-if="loading.app" class="loading-screen"><div class="loader"></div><span>正在连接控制中心…</span></div>
   </div>
 </template>
-

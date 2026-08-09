@@ -227,7 +227,14 @@ class ProvisioningServiceIntegrationTest {
                         List.of("socks"), null, "protocols-all"))
                 .results().getFirst().allocation();
 
-        assertThat(created.connection().protocolsAll()).containsAllEntriesOf(protocolsAll);
+        // Batch responses are the normal connection contract: only routed
+        // acceleration links are exposed.  Raw SOCKS5/BitBrowser remain
+        // available from the explicit allocation detail endpoint.
+        assertThat(created.connection().protocolsAll()).containsOnlyKeys(
+                "vless", "socksAcceleration", "vmess");
+        assertThat(created.connection().protocolInfo())
+                .doesNotContainKeys("rawProtocol", "rawServer", "rawPort", "rawUsername",
+                        "rawPassword", "sourceAddress", "sourcePort");
         ResidentialAllocation stored = allocationRepository.findAll().getFirst();
         assertThat(stored.getProtocolsAllCipher()).startsWith("enc:v1:");
         assertThat(stored.getProtocolsAllCipher()).doesNotContain("generated-vless");
@@ -451,7 +458,7 @@ class ProvisioningServiceIntegrationTest {
         var response = provisioningService.provisionProxyBatch(
                 "batch-proxy-loop",
                 new ProxyProvisionRequest(
-                        "38.30.216.149 upstream.example 5001 loop-user loop-password",
+                        "203.0.113.10 upstream.example 5001 loop-user loop-password",
                         List.of("socks"), node.getId(), "loop"));
 
         assertThat(response.succeeded()).isZero();
@@ -480,7 +487,7 @@ class ProvisioningServiceIntegrationTest {
         var response = provisioningService.provisionProxyBatch(
                 "batch-independent-socks",
                 new ProxyProvisionRequest(
-                        "38.30.216.149 198.51.100.50 5001 independent-user secret",
+                        "203.0.113.10 198.51.100.50 5001 independent-user secret",
                         List.of("socks"), node.getId(), "independent"));
 
         assertThat(response.succeeded()).isEqualTo(1);
