@@ -25,7 +25,10 @@ function utf8Base64(valueToEncode) {
 function socksAuth(valueToEncode) {
   const username = publicSocksUsername(valueToEncode?.username)
   const password = String(valueToEncode?.password ?? '')
-  return `${encode(username)}:${encode(password)}`
+  // V2Ray/V2RayN imports SOCKS credentials from a Base64-encoded
+  // `username:password` userinfo. This is only a share-link representation;
+  // Node Manager still authenticates with the separate plaintext fields.
+  return utf8Base64(`${username}:${password}`)
 }
 
 // Older Node Manager installations exposed the internal VLESS/VMess auth
@@ -120,10 +123,22 @@ export function buildSocksAcceleration(data) {
   if (!data || !value(data, 'accelerationDomain') || !value(data, 'username') || !value(data, 'password')) return ''
   const targetPort = port(data, 'accelerationPortSocks', 5001)
   // sing-box expects the actual local SOCKS credentials, not Base64 text.
-  // Encode each field independently so v2rayN and other standard clients
-  // import username and password into their separate fields.
+  // Base64 is only the share-link representation consumed by the client.
   const auth = socksAuth({ username: value(data, 'username'), password: value(data, 'password') })
   return `socks://${auth}@${host(value(data, 'accelerationDomain'))}:${targetPort}#${remark(data)}`
+}
+
+function hasCompleteStructuredSocks(data) {
+  if (!data) return false
+  const targetPort = Number(data.accelerationPortSocks)
+  return Boolean(
+    value(data, 'accelerationDomain')
+      && value(data, 'username')
+      && value(data, 'password')
+      && Number.isInteger(targetPort)
+      && targetPort >= 1
+      && targetPort <= 65535,
+  )
 }
 
 export function buildVmess(data) {
@@ -177,4 +192,57 @@ export function buildAllProtocols(
     if (link) links.push({ key: 'vmess', protocol: 'VMess 加速', value: link })
   }
   return links
+}
+
+const connectionLabels = {
+  vless: 'VLESS 加速',
+  socksAcceleration: 'SOCKS 加速',
+  vmess: 'VMess 加速',
+}
+
+function legacySocksLink(valueToCheck) {
+  const text = String(valueToCheck || '')
+  return text.includes('node-manager:') || text.includes('node-manager%3A')
+    ? ''
+    : text
+}
+
+function legacyConnectionValue(connection, key) {
+  if (key === 'vless') return connection?.vless || ''
+  if (key === 'vmess') return connection?.vmess || ''
+  if (key !== 'socksAcceleration' || !connection?.socks) return ''
+
+  const socks = connection.socks
+  if (!socks.host || !socks.username || !socks.password) return ''
+  const targetPort = Number(socks.port)
+  if (!Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535) return ''
+  return `socks://${socksAuth(socks)}@${host(socks.host)}:${targetPort}`
+}
+
+// Select each public connection protocol independently. A partially populated
+// protocolInfo must not hide a valid legacy link for a different protocol.
+export function buildConnectionLinks(connection) {
+  if (!connection) return []
+
+  const enabled = new Set(connection.protocols || ['vless', 'vmess', 'socks'])
+  const structured = connection.protocolInfo || {}
+  const legacy = connection.protocolsAll || {}
+  const keys = [
+    ['vless', buildVless],
+    ['socksAcceleration', buildSocksAcceleration],
+    ['vmess', buildVmess],
+  ]
+
+  return keys
+    .filter(([key]) => enabled.has(key === 'socksAcceleration' ? 'socks' : key))
+    .map(([key, builder]) => {
+      let link = ''
+      if (key !== 'socksAcceleration' || hasCompleteStructuredSocks(structured)) {
+        link = builder(structured)
+      }
+      if (!link) link = legacySocksLink(legacy[key])
+      if (!link) link = legacyConnectionValue(connection, key)
+      return link ? { key, protocol: connectionLabels[key], value: link } : null
+    })
+    .filter(Boolean)
 }

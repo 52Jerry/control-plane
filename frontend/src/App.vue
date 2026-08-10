@@ -6,7 +6,7 @@ import {
   Wrench, X,
 } from 'lucide-vue-next'
 import { ApiError, api, setUnauthorizedHandler } from './api'
-import { buildAllProtocols, buildSocks5Original } from './protocols'
+import { buildAllProtocols, buildConnectionLinks } from './protocols'
 
 const meta = ref({ version: '0.1.0', authRequired: false, passwordLoginEnabled: false })
 const dashboard = ref({ nodeCount: 0, onlineNodeCount: 0, degradedNodeCount: 0, userCount: 0, connections: 0, totalTraffic: 0 })
@@ -97,7 +97,17 @@ const installExpired = computed(() => Boolean(installExpiresAt.value) && install
 const proxyOriginalSocksLink = computed(() => {
   if (!revealProxyCredentials.value) return ''
   const d = proxyCredentialData.value
-  return d ? buildSocks5Original(d.protocolInfo || d) : ''
+  if (!d) return ''
+  // The proxy-details response keeps local node credentials and upstream
+  // residential credentials in separate fields.  Build the raw SOCKS link
+  // through the same protocol helper used by the connection modal so the
+  // upstream endpoint and credentials are selected explicitly.
+  const links = buildAllProtocols(
+    d.protocolInfo || d,
+    ['vless', 'vmess', 'socks'],
+    true,
+  )
+  return links.find((item) => item.key === 'socks5')?.value || ''
 })
 
 function notify(message, type = 'success') {
@@ -640,48 +650,18 @@ function socksUri(socks) {
   if (!socks) return ''
   const rawHost = String(socks.host || '')
   const host = rawHost.includes(':') && !rawHost.startsWith('[') ? `[${rawHost}]` : rawHost
-  // Encode username and password independently.  Encoding the complete
-  // ``username:password`` pair as one token makes v2rayN/V2Ray treat it as a
-  // username and leaves the imported password blank.
-  return `socks://${encodeURIComponent(socks.username || '')}:${encodeURIComponent(socks.password || '')}@${host}:${socks.port}`
+  // V2Ray/V2RayN expects the complete username:password pair as standard
+  // Base64 in the SOCKS URI userinfo.  The server still stores and checks the
+  // two credentials separately; this conversion is only for sharing/import.
+  const bytes = new TextEncoder().encode(`${socks.username || ''}:${socks.password || ''}`)
+  let binary = ''
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte) })
+  const auth = btoa(binary)
+  return `socks://${auth}@${host}:${socks.port}`
 }
 
 function connectionLinks(connection) {
-  if (!connection) return []
-  const labels = {
-    socks5: 'SOCKS5 原始',
-    bitbrowser: 'BitBrowser',
-    vless: 'VLESS 加速',
-    socksAcceleration: 'SOCKS 加速',
-    vmess: 'VMess 加速',
-  }
-  const structured = buildAllProtocols(
-    connection.protocolInfo,
-    connection.protocols || ['vless', 'vmess', 'socks'],
-    false,
-  )
-  // protocolInfo is the canonical, freshly generated representation. Do not
-  // append historical protocolsAll entries when it is complete: old rows may
-  // contain a residential exit IP, an upstream SOCKS endpoint, or the legacy
-  // node-manager:<id> public username.
-  if (structured.length > 0) return structured
-
-  const links = []
-  Object.entries(connection.protocolsAll || {})
-    .filter(([key, value]) => value && !isLegacyBrokenSocksLink(key, value))
-    .forEach(([key, value]) => links.push({ key, protocol: labels[key] || key, value }))
-  if (links.length > 0) return links
-  return [
-    connection.vless ? { key: 'vless', protocol: 'VLESS', value: connection.vless } : null,
-    connection.vmess ? { key: 'vmess', protocol: 'VMess', value: connection.vmess } : null,
-    connection.socks ? { key: 'socks', protocol: 'SOCKS', value: socksUri(connection.socks) } : null,
-  ].filter(Boolean)
-}
-
-function isLegacyBrokenSocksLink(key, value) {
-  if (!['socks5', 'socksAcceleration'].includes(key)) return false
-  const text = String(value || '')
-  return text.includes('node-manager:') || text.includes('node-manager%3A')
+  return buildConnectionLinks(connection)
 }
 
 function protocolHint(key) {
