@@ -133,6 +133,27 @@ class ManagedNodeServiceTest {
                 .hasMessageContaining("不能移除");
     }
 
+    @Test
+    void decryptsStoredNodeTokenOnlyThroughDedicatedLookup() {
+        ManagedNodeRepository repository = mock(ManagedNodeRepository.class);
+        ResidentialAllocationRepository allocationRepository = mock(ResidentialAllocationRepository.class);
+        NodeManagerClient client = mock(NodeManagerClient.class);
+        ControlPlaneProperties properties = new ControlPlaneProperties();
+        properties.getSecurity().setEncryptionKey("unit-test-encryption-key");
+        SecretCipher secretCipher = new SecretCipher(properties);
+        ManagedNodeService service = new ManagedNodeService(
+                repository, allocationRepository, client, properties, secretCipher);
+        UUID nodeId = UUID.randomUUID();
+        ManagedNode node = new ManagedNode("Node A", "http://node.example", secretCipher.encrypt("node-secret-token"));
+        node.setId(nodeId);
+        when(repository.findById(nodeId)).thenReturn(Optional.of(node));
+
+        var response = service.getNodeToken(nodeId);
+
+        assertThat(response.nodeId()).isEqualTo(nodeId);
+        assertThat(response.token()).isEqualTo("node-secret-token");
+    }
+
     private AgentInfo agentInfo(String nodeId) {
         return new AgentInfo(
                 "node-manager", "v1", "1.4.1", nodeId, List.of(), List.of(),

@@ -1,6 +1,7 @@
 package com.example.nodecontrol.dto;
 
 import com.example.nodecontrol.dto.RemoteModels.UserConnection;
+import com.example.nodecontrol.dto.RemoteModels.NodeAccessInfo;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -148,6 +149,21 @@ public final class ControlPlaneModels {
     ) {
     }
 
+    public record BatchConnectionsRequest(
+            @NotEmpty(message = "用户 ID 不能为空")
+            @Size(max = 100, message = "单次最多读取 100 个用户连接")
+            List<@NotBlank(message = "用户 ID 不能为空")
+                    @Size(max = 64, message = "用户 ID 不能超过 64 个字符") String> userIds
+    ) {
+    }
+
+    public record BatchConnectionResult(
+            String userId,
+            UserConnection connection,
+            String error
+    ) {
+    }
+
     public record NodeView(
             UUID id,
             String name,
@@ -180,6 +196,12 @@ public final class ControlPlaneModels {
     ) {
     }
 
+    public record NodeTokenResponse(
+            UUID nodeId,
+            String token
+    ) {
+    }
+
     public record DashboardView(
             long nodeCount,
             long onlineNodeCount,
@@ -199,8 +221,14 @@ public final class ControlPlaneModels {
             @Pattern(regexp = "^[A-Za-z0-9._-]*$", message = "用户 ID 只能包含字母、数字、点、下划线和短横线") String userId,
             @NotEmpty(message = "至少选择一种协议")
             List<@Pattern(regexp = "vless|vmess|socks", message = "协议只支持 VLESS、VMess 或 SOCKS") String> protocols,
-            UUID preferredNodeId
+            UUID preferredNodeId,
+            @Min(value = 0, message = "流量额度不能小于 0") Long trafficLimitBytes,
+            @Min(value = 0, message = "最大来源 IP 数不能小于 0")
+            @Max(value = 1000, message = "最大来源 IP 数不能超过 1000") Integer maxSourceIps
     ) {
+        public ProvisionRequest(String userId, List<String> protocols, UUID preferredNodeId) {
+            this(userId, protocols, preferredNodeId, null, null);
+        }
     }
 
     public record ProxyProvisionRequest(
@@ -272,7 +300,8 @@ public final class ControlPlaneModels {
             String proxyPassword,
             String sourceIp,
             String sourceAddress,
-            Integer sourcePort
+            Integer sourcePort,
+            NodeAccessInfo access
     ) {
         public AllocationView(UUID id,
                               String requestKey,
@@ -289,7 +318,7 @@ public final class ControlPlaneModels {
                               Instant completedAt) {
             this(id, requestKey, userId, protocols, state, nodeId, nodeName, nodeHost,
                     connection, Map.of(), Map.of(), lastError, createdAt, updatedAt, completedAt,
-                    "DIRECT", false, null, null, null, null, null, null, null);
+                    "DIRECT", false, null, null, null, null, null, null, null, null);
         }
 
         public AllocationView(UUID id,
@@ -311,7 +340,37 @@ public final class ControlPlaneModels {
                               Integer proxyPort) {
             this(id, requestKey, userId, protocols, state, nodeId, nodeName, nodeHost,
                     connection, Map.of(), Map.of(), lastError, createdAt, updatedAt, completedAt,
-                    provisioningMode, proxyBound, proxyServer, proxyPort, null, null, null, null, null);
+                    provisioningMode, proxyBound, proxyServer, proxyPort, null, null, null, null, null, null);
+        }
+
+        public AllocationView(UUID id,
+                              String requestKey,
+                              String userId,
+                              List<String> protocols,
+                              String state,
+                              UUID nodeId,
+                              String nodeName,
+                              String nodeHost,
+                              UserConnection connection,
+                              Map<String, String> protocolsAll,
+                              Map<String, Object> protocolInfo,
+                              String lastError,
+                              Instant createdAt,
+                              Instant updatedAt,
+                              Instant completedAt,
+                              String provisioningMode,
+                              boolean proxyBound,
+                              String proxyServer,
+                              Integer proxyPort,
+                              String proxyUsername,
+                              String proxyPassword,
+                              String sourceIp,
+                              String sourceAddress,
+                              Integer sourcePort) {
+            this(id, requestKey, userId, protocols, state, nodeId, nodeName, nodeHost,
+                    connection, protocolsAll, protocolInfo, lastError, createdAt, updatedAt, completedAt,
+                    provisioningMode, proxyBound, proxyServer, proxyPort, proxyUsername, proxyPassword,
+                    sourceIp, sourceAddress, sourcePort, null);
         }
 
         public AllocationView {

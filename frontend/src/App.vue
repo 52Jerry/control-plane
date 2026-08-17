@@ -1,12 +1,30 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
-  Activity, AlertTriangle, Clipboard, CloudCog, Copy, Database, Eye, EyeOff, Gauge, Link, LogOut, Plus, Power,
+  Activity, AlertTriangle, Clipboard, CloudCog, Copy, Database, Download, Eye, EyeOff, FileSpreadsheet, Gauge, Link, LogOut, Plus, Power,
   RefreshCw, RotateCw, Search, Server, Settings2, ShieldCheck, Trash2, UserCog, Users,
-  Wrench, X,
+  Upload, Wrench, X,
 } from 'lucide-vue-next'
 import { ApiError, api, setUnauthorizedHandler } from './api'
-import { buildAllProtocols, buildConnectionLinks } from './protocols'
+import {
+  buildAllProtocols,
+  buildConnectionExportData,
+  buildConnectionLinks,
+  connectionExportScenarios,
+} from './protocols'
+import {
+  buildConnectionBatchJobs,
+  chunkRows,
+  connectionLookupKey,
+  distributeRowsRoundRobin,
+  filterImportedRowsBySequence,
+  parseExcelTransferTables,
+  proxyInputFromRows,
+  selectedRowsForExport,
+  selectSequenceRange,
+} from './excelTransfer'
+import ConnectionLinksPanel from './ConnectionLinksPanel.vue'
+import { normalizeUserPageQuery, userPageCacheKey } from './userPageCache'
 
 const meta = ref({ version: '0.1.0', authRequired: false, passwordLoginEnabled: false })
 const dashboard = ref({ nodeCount: 0, onlineNodeCount: 0, degradedNodeCount: 0, userCount: 0, connections: 0, totalTraffic: 0 })
@@ -14,15 +32,15 @@ const nodes = ref([])
 const users = ref([])
 const userLoadError = ref('')
 const allocations = ref([])
-const allocationPage = reactive({ page: 1, pageSize: 20, total: 0, totalPages: 1 })
+const allocationPage = reactive({ page: 1, pageSize: 20, total: 0, totalPages: 1, ip: '' })
 const auditLogs = ref([])
 const auditPage = reactive({ page: 0, pageSize: 50, total: 0, totalPages: 1 })
 const controlAccounts = ref([])
 const activeView = ref('overview')
-const userPage = reactive({ page: 1, pageSize: 20, total: 0, keyword: '' })
+const userPage = reactive({ page: 1, pageSize: 20, total: 0, keyword: '', ip: '', sort: 'createdDesc' })
 const selectedNodeId = ref(localStorage.getItem('selected-node-id') || '')
 const loading = reactive({ app: true, nodes: false, users: false, allocations: false, audit: false, action: false })
-const modal = reactive({ login: false, accounts: false, node: false, installation: false, user: false, provision: false, connection: false, proxy: false, proxyDetails: false, settings: false })
+const modal = reactive({ login: false, accounts: false, node: false, installation: false, user: false, provision: false, connection: false, proxy: false, proxyDetails: false, policy: false, settings: false, exportUsers: false })
 const toast = reactive({ visible: false, type: 'success', message: '' })
 const loginForm = reactive({ username: '', password: '' })
 const accountForm = reactive({ username: '', password: '', role: 'PROVISIONER' })
@@ -36,6 +54,24 @@ const connectionContext = ref(null)
 const revealConnectionSecrets = ref(false)
 const proxyCredentialData = ref(null)
 const revealProxyCredentials = ref(false)
+const revealListCredentials = ref(false)
+const deletingUserId = ref('')
+const selectedUserIds = ref([])
+const selectedUserRows = ref([])
+const selectedUserNodeId = ref('')
+const exportingUsers = ref(false)
+const importingUsers = ref(false)
+const excelMode = ref('export')
+const exportForm = reactive({ scenario: 'ipDirect', nodeIds: [], rangeStart: 1, rangeEnd: '' })
+const importForm = reactive({ file: null, fileName: '', nodeIds: [], rangeStart: 1, rangeEnd: '' })
+const importFileInput = ref(null)
+const importResult = ref(null)
+const exportProgress = reactive({ current: 0, total: 0, stage: '准备导出数据' })
+const importProgress = reactive({ current: 0, total: 0, succeeded: 0, failed: 0 })
+const nodeToken = ref('')
+const nodeTokenNodeId = ref('')
+const revealNodeToken = ref(false)
+const loadingNodeToken = ref(false)
 const proxyBatchForm = reactive({
   input: '',
   preferredNodeId: '',
@@ -50,10 +86,15 @@ let refreshTimer
 let installTimer
 let toastTimer
 let installRequestVersion = 0
+let nodeTokenRequestVersion = 0
+let userLoadRequestVersion = 0
+let userPageCacheGeneration = 0
+const userPageCache = new Map()
+const userPageRequests = new Map()
 
 const nodeForm = reactive({ name: '服务器节点', baseUrl: 'http://server:8088', token: '', maxUsers: 500 })
 const nodeSettingsForm = reactive({ enabled: true, maintenance: false, maxUsers: 500 })
-const provisionForm = reactive({ userId: '', protocols: ['vless', 'vmess', 'socks'], preferredNodeId: '' })
+const provisionForm = reactive({ userId: '', protocols: ['vless', 'vmess', 'socks'], preferredNodeId: '', trafficLimitGb: null, maxSourceIps: null })
 const userForm = reactive({
   userId: '',
   protocols: ['vless', 'vmess', 'socks'],
@@ -64,10 +105,26 @@ const userForm = reactive({
   proxyPort: 1080,
   proxyUsername: '',
   proxyPassword: '',
+  trafficLimitGb: null,
+  maxSourceIps: null,
 })
 const proxyForm = reactive({ userId: '', server: '', port: 1080, username: '', password: '' })
+const policyForm = reactive({ userId: '', trafficLimitGb: null, maxSourceIps: null })
 
 const selectedNode = computed(() => nodes.value.find((node) => node.id === selectedNodeId.value) || null)
+const selectedExportScenario = computed(() => connectionExportScenarios
+  .find((scenario) => scenario.key === exportForm.scenario) || connectionExportScenarios[0])
+const selectedUserCount = computed(() => selectedUserNodeId.value === selectedNodeId.value
+  ? selectedUserIds.value.length
+  : 0)
+const currentPageUserIds = computed(() => users.value.map((user) => user.userId))
+const allCurrentPageUsersSelected = computed(() => currentPageUserIds.value.length > 0
+  && currentPageUserIds.value.every((userId) => selectedUserIds.value.includes(userId)))
+const someCurrentPageUsersSelected = computed(() => currentPageUserIds.value
+  .some((userId) => selectedUserIds.value.includes(userId)))
+const excelTransferBusy = computed(() => exportingUsers.value || importingUsers.value)
+const transferNodes = computed(() => excelMode.value === 'import' ? allocatableNodes.value : nodes.value)
+const activeTransferNodeIds = computed(() => excelMode.value === 'import' ? importForm.nodeIds : exportForm.nodeIds)
 const totalPages = computed(() => Math.max(1, Math.ceil(userPage.total / userPage.pageSize)))
 const effectiveRole = computed(() => meta.value.authRequired ? sessionRole.value : 'ADMIN')
 const canManageAccounts = computed(() => effectiveRole.value === 'ADMIN')
@@ -75,7 +132,9 @@ const canViewAudit = computed(() => effectiveRole.value === 'ADMIN')
 const canOperateNodes = computed(() => ['ADMIN', 'NODE_OPS'].includes(effectiveRole.value))
 const canProvision = computed(() => ['ADMIN', 'NODE_OPS', 'PROVISIONER'].includes(effectiveRole.value))
 const canManageUsers = computed(() => ['ADMIN', 'PROVISIONER'].includes(effectiveRole.value))
+const canDeleteUsers = computed(() => ['ADMIN', 'NODE_OPS', 'PROVISIONER'].includes(effectiveRole.value))
 const canViewSensitive = computed(() => ['ADMIN', 'NODE_OPS', 'PROVISIONER'].includes(effectiveRole.value))
+const canViewNodeToken = computed(() => ['ADMIN', 'NODE_OPS'].includes(effectiveRole.value))
 const pageTitle = computed(() => ({
   overview: '总览',
   nodes: '受管节点',
@@ -161,6 +220,7 @@ function redactKnownSecrets(value) {
     userForm.socksPassword,
     userForm.proxyPassword,
     proxyForm.password,
+    nodeToken.value,
     installCommand.value.match(/niusu_[A-Za-z0-9_-]+/)?.[0],
   ].filter((secret) => secret && secret.length >= 3)
   secrets.forEach((secret) => { result = result.split(secret).join('***') })
@@ -194,9 +254,20 @@ function clearFormSecrets() {
   userForm.socksPassword = ''
   userForm.proxyPassword = ''
   proxyForm.password = ''
+  clearNodeToken()
+}
+
+function clearNodeToken() {
+  nodeTokenRequestVersion += 1
+  nodeToken.value = ''
+  nodeTokenNodeId.value = ''
+  revealNodeToken.value = false
+  loadingNodeToken.value = false
 }
 
 function clearBusinessData() {
+  clearUserPageCache()
+  loading.users = false
   nodes.value = []
   users.value = []
   userLoadError.value = ''
@@ -205,6 +276,14 @@ function clearBusinessData() {
   controlAccounts.value = []
   dashboard.value = { nodeCount: 0, onlineNodeCount: 0, degradedNodeCount: 0, userCount: 0, connections: 0, totalTraffic: 0 }
   userPage.total = 0
+  modal.exportUsers = false
+  exportingUsers.value = false
+  importingUsers.value = false
+  importForm.file = null
+  importForm.fileName = ''
+  importResult.value = null
+  Object.assign(exportProgress, { current: 0, total: 0, stage: '准备导出数据' })
+  Object.assign(importProgress, { current: 0, total: 0, succeeded: 0, failed: 0 })
   Object.assign(auditPage, { page: 0, total: 0, totalPages: 1 })
   clearConnectionDetails()
   closeProxyDetailsModal()
@@ -295,53 +374,165 @@ function closeProxyDetailsModal() {
   revealProxyCredentials.value = false
 }
 
-async function loadNodes() {
+function closePolicyModal() {
+  modal.policy = false
+  Object.assign(policyForm, { userId: '', trafficLimitGb: null, maxSourceIps: null })
+}
+
+async function loadNodes({ awaitDashboard = true } = {}) {
   loading.nodes = true
   try {
-    const [nodeData, dashboardData] = await Promise.all([api.nodes(), api.dashboard()])
+    const nodeData = await api.nodes()
     nodes.value = nodeData
-    dashboard.value = dashboardData
     if (!nodes.value.some((node) => node.id === selectedNodeId.value)) {
       selectedNodeId.value = nodes.value[0]?.id || ''
     }
+    if (nodeTokenNodeId.value && nodeTokenNodeId.value !== selectedNodeId.value) clearNodeToken()
     if (selectedNodeId.value) localStorage.setItem('selected-node-id', selectedNodeId.value)
+
+    const dashboardRequest = api.dashboard().then((dashboardData) => {
+      dashboard.value = dashboardData
+      return dashboardData
+    })
+    if (!awaitDashboard) {
+      dashboardRequest.catch((error) => notify(errorMessage(error), 'error'))
+    } else {
+      await dashboardRequest
+    }
   } finally {
     loading.nodes = false
   }
 }
 
-async function loadUsers(resetPage = false) {
+function clearUserPageCache() {
+  userPageCacheGeneration += 1
+  userPageCache.clear()
+  userPageRequests.clear()
+  userLoadRequestVersion += 1
+}
+
+function currentUserPageQuery(page = userPage.page) {
+  return normalizeUserPageQuery({
+    nodeId: selectedNodeId.value,
+    page,
+    pageSize: userPage.pageSize,
+    keyword: userPage.keyword,
+    ip: userPage.ip,
+    sort: userPage.sort,
+  })
+}
+
+function applyUserPage(data, query) {
+  users.value = Array.isArray(data?.items) ? data.items : []
+  userPage.page = query.page
+  userPage.total = Number(data?.total || 0)
+  userLoadError.value = ''
+}
+
+async function fetchUserPage(query, { force = false } = {}) {
+  const cacheKey = userPageCacheKey(query)
+  if (!force && userPageCache.has(cacheKey)) return userPageCache.get(cacheKey)
+
+  const generation = userPageCacheGeneration
+  const requestKey = `${generation}:${cacheKey}:${force ? 'refresh' : 'cached'}`
+  if (userPageRequests.has(requestKey)) return userPageRequests.get(requestKey)
+
+  const request = api.users(query.nodeId, {
+    page: query.page,
+    pageSize: query.pageSize,
+    keyword: query.keyword,
+    ip: query.ip,
+    sort: query.sort,
+    refresh: force || undefined,
+  }).then((data) => {
+    if (generation === userPageCacheGeneration) userPageCache.set(cacheKey, data)
+    return data
+  }).finally(() => {
+    userPageRequests.delete(requestKey)
+  })
+  userPageRequests.set(requestKey, request)
+  return request
+}
+
+function prefetchNextUserPage(query, total) {
+  const totalPageCount = Math.max(1, Math.ceil(Number(total || 0) / query.pageSize))
+  if (query.page >= totalPageCount) return
+  const nextQuery = { ...query, page: query.page + 1 }
+  const cacheKey = userPageCacheKey(nextQuery)
+  if (userPageCache.has(cacheKey)) return
+  fetchUserPage(nextQuery).catch(() => {})
+}
+
+function prefetchNodeUsers(nodeId) {
+  if (!nodeId || nodeId === selectedNodeId.value
+    || userPage.keyword.trim() || userPage.ip.trim()) return
+  const query = normalizeUserPageQuery({
+    nodeId,
+    page: 1,
+    pageSize: userPage.pageSize,
+    keyword: '',
+    ip: '',
+    sort: userPage.sort,
+  })
+  const cacheKey = userPageCacheKey(query)
+  if (userPageCache.has(cacheKey)) return
+  fetchUserPage(query).catch(() => {})
+}
+
+async function loadUsers(resetPage = false, options = {}) {
   if (!selectedNodeId.value) {
+    userLoadRequestVersion += 1
+    loading.users = false
     users.value = []
     userPage.total = 0
     userLoadError.value = ''
+    clearUserSelection()
     return
   }
-  if (resetPage) userPage.page = 1
-  loading.users = true
+  const targetPage = resetPage ? 1 : (options.page || userPage.page)
+  if (resetPage) {
+    clearUserSelection()
+  }
+  const force = Boolean(options.force)
+  if (force) clearUserPageCache()
+  const query = currentUserPageQuery(targetPage)
+  const cacheKey = userPageCacheKey(query)
+  const requestVersion = ++userLoadRequestVersion
   userLoadError.value = ''
+  if (!force && userPageCache.has(cacheKey)) {
+    const data = userPageCache.get(cacheKey)
+    loading.users = false
+    applyUserPage(data, query)
+    prefetchNextUserPage(query, data.total)
+    return
+  }
+
+  loading.users = true
   try {
-    const data = await api.users(selectedNodeId.value, {
-      page: userPage.page,
-      pageSize: userPage.pageSize,
-      keyword: userPage.keyword.trim(),
-    })
-    users.value = data.items
-    userPage.total = data.total
+    const data = await fetchUserPage(query, { force })
+    if (requestVersion !== userLoadRequestVersion
+      || userPageCacheKey(currentUserPageQuery(targetPage)) !== cacheKey) return
+    applyUserPage(data, query)
+    prefetchNextUserPage(query, data.total)
   } catch (error) {
     if (error.status === 401) throw error
-    users.value = []
-    userPage.total = 0
+    if (requestVersion !== userLoadRequestVersion) return
+    if (users.value.length === 0) userPage.total = 0
     userLoadError.value = errorMessage(error)
   } finally {
-    loading.users = false
+    if (requestVersion === userLoadRequestVersion) loading.users = false
   }
 }
 
-async function loadAllocations() {
+async function loadAllocations(resetPage = false) {
+  if (resetPage) allocationPage.page = 1
   loading.allocations = true
   try {
-    const data = await api.allocations({ page: allocationPage.page, pageSize: allocationPage.pageSize })
+    const data = await api.allocations({
+      page: allocationPage.page,
+      pageSize: allocationPage.pageSize,
+      ip: allocationPage.ip.trim(),
+    })
     if (Array.isArray(data)) {
       // Backward compatibility with an older Control Plane instance.
       allocations.value = data
@@ -395,8 +586,8 @@ async function nextAllocationPage(delta) {
 }
 
 async function loadAll() {
-  await Promise.all([loadNodes(), loadAllocations(), loadAuditLogs()])
-  await loadUsers()
+  await loadNodes({ awaitDashboard: false })
+  await Promise.all([loadUsers(), loadAllocations(), loadAuditLogs()])
 }
 
 async function bootstrap() {
@@ -577,11 +768,43 @@ async function deleteControlAccount(account) {
 }
 
 async function selectNode(nodeId) {
+  if (selectedNodeId.value !== nodeId) {
+    clearNodeToken()
+    clearUserSelection()
+    userLoadRequestVersion += 1
+    loading.users = false
+    users.value = []
+    userPage.total = 0
+    userLoadError.value = ''
+  }
   selectedNodeId.value = nodeId
   localStorage.setItem('selected-node-id', nodeId)
   userPage.page = 1
   activeView.value = 'users'
   await loadUsers()
+}
+
+async function loadNodeToken() {
+  const nodeId = selectedNodeId.value
+  if (!nodeId || !canViewNodeToken.value) return
+  if (nodeTokenNodeId.value === nodeId && nodeToken.value) {
+    revealNodeToken.value = true
+    return
+  }
+  clearNodeToken()
+  const requestVersion = nodeTokenRequestVersion
+  loadingNodeToken.value = true
+  try {
+    const response = await api.nodeToken(nodeId)
+    if (requestVersion !== nodeTokenRequestVersion || selectedNodeId.value !== nodeId) return
+    nodeToken.value = response.token || ''
+    nodeTokenNodeId.value = nodeId
+    revealNodeToken.value = true
+  } catch (error) {
+    if (requestVersion === nodeTokenRequestVersion) notify(errorMessage(error), 'error')
+  } finally {
+    if (requestVersion === nodeTokenRequestVersion) loadingNodeToken.value = false
+  }
 }
 
 async function registerNode() {
@@ -602,7 +825,7 @@ async function registerNode() {
 
 function openProvision() {
   Object.assign(provisionForm, {
-    userId: '', protocols: ['vless', 'vmess', 'socks'], preferredNodeId: '',
+    userId: '', protocols: ['vless', 'vmess', 'socks'], preferredNodeId: '', trafficLimitGb: null, maxSourceIps: null,
   })
   modal.provision = true
 }
@@ -664,30 +887,40 @@ function connectionLinks(connection) {
   return buildConnectionLinks(connection)
 }
 
-function protocolHint(key) {
-  const hints = {
-    socks5: '直接代理，可用于 v2rayN/Clash 等客户端',
-    bitbrowser: 'BitBrowser 专用格式',
-    vless: '节点 VLESS 入站，节点 IP + Reality 配置，本地电脑可用',
-    socksAcceleration: '节点 SOCKS 入站，在 v2rayN/Clash 本地电脑直接可用',
-    vmess: '节点 VMess 入站，节点 IP + 本地电脑可用',
+function withDirectEndpoint(connection, endpoint) {
+  if (!connection || !endpoint) return connection
+  const socks = connection.socks || {}
+  const host = endpoint.host || endpoint.ip || endpoint.sourceIp
+  const port = endpoint.port || endpoint.sourcePort
+  const countryCode = endpoint.countryCode
+  const protocolInfo = {
+    ...(connection.protocolInfo || {}),
+    ...(countryCode && !['XX', 'ZZ'].includes(String(countryCode).toUpperCase()) ? {
+      countryCode,
+      countryName: endpoint.countryName,
+      cityName: endpoint.cityName,
+    } : {}),
   }
-  return hints[key] || ''
+  if (!host || !port) return { ...connection, protocolInfo }
+  return {
+    ...connection,
+    protocolInfo,
+    directEndpoint: {
+      host,
+      port,
+      username: endpoint.username || socks.username,
+      password: endpoint.password || socks.password,
+    },
+  }
 }
 
 function batchConnectionLinks(result) {
   const connection = result?.allocation?.connection
   if (!connection) return []
-  // Batch provisioning must expose the same three Node Manager entry points
-  // as manual user creation.  `result.socksLink` is the upstream SOCKS
-  // endpoint and contains the upstream credentials; it is not the generated
-  // node user's routed SOCKS entry and must never be shown as a protocol link.
-  return connectionLinks(connection)
-}
-
-function maskedLink(value) {
-  if (!value) return ''
-  return '••••••••••••••••••••••••••••••••'
+  return connectionLinks(withDirectEndpoint(connection, {
+    ip: result.sourceIp,
+    port: result.sourcePort,
+  }))
 }
 
 async function provisionProxyBatch() {
@@ -752,6 +985,8 @@ async function provisionDirect() {
       userId: provisionForm.userId,
       protocols: provisionForm.protocols,
       preferredNodeId: provisionForm.preferredNodeId || null,
+      trafficLimitBytes: gigabytesToBytes(provisionForm.trafficLimitGb),
+      maxSourceIps: positiveIntegerOrNull(provisionForm.maxSourceIps),
     }
     const allocation = await api.provision(payload, createIdempotencyKey(provisionForm.userId))
     modal.provision = false
@@ -781,11 +1016,42 @@ async function retryAllocation(allocation) {
   }
 }
 
+async function deleteAllocation(allocation) {
+  if (!confirm(`确认删除 ${allocation.userId} 的失败/待分配记录？删除后可重新生成。`)) return
+  loading.action = true
+  try {
+    await api.deleteAllocation(allocation.id)
+    if (allocations.value.length === 1 && allocationPage.page > 1) allocationPage.page -= 1
+    await loadAllocations()
+    notify('记录已删除，可以重新生成节点')
+  } catch (error) {
+    notify(errorMessage(error), 'error')
+  } finally {
+    loading.action = false
+  }
+}
+
 async function showAllocationConnection(allocation) {
   loading.action = true
   try {
     const detail = allocation.connection ? allocation : await api.allocation(allocation.id)
-    connectionData.value = detail.connection
+    let connection = detail.connection
+    if (detail.nodeId && detail.userId) {
+      try {
+        connection = await api.connections(detail.nodeId, detail.userId)
+      } catch (error) {
+        if (!connection) throw error
+      }
+    }
+    connectionData.value = withDirectEndpoint(connection, {
+      ip: detail.sourceIp || detail.access?.ip,
+      port: detail.sourcePort || detail.access?.port,
+      username: detail.proxyUsername || detail.access?.username,
+      password: detail.proxyPassword || detail.access?.password,
+      countryCode: detail.access?.countryCode,
+      countryName: detail.access?.countryName,
+      cityName: detail.access?.cityName,
+    })
     connectionUser.value = detail.userId
     connectionContext.value = detail
     modal.connection = true
@@ -856,7 +1122,10 @@ async function removeNode(node) {
   if (!confirm(`仅从控制中心移除节点 ${node.name}，不会卸载服务器上的节点管理器。继续？`)) return
   try {
     await api.deleteNode(node.id)
-    if (selectedNodeId.value === node.id) selectedNodeId.value = ''
+    if (selectedNodeId.value === node.id) {
+      selectedNodeId.value = ''
+      clearNodeToken()
+    }
     await loadAll()
     notify('节点已从控制中心移除')
   } catch (error) {
@@ -868,6 +1137,7 @@ function openCreateUser() {
   Object.assign(userForm, {
     userId: '', protocols: ['vless', 'vmess', 'socks'], socksUsername: '', socksPassword: '',
     useProxy: false, proxyServer: '', proxyPort: 1080, proxyUsername: '', proxyPassword: '',
+    trafficLimitGb: null, maxSourceIps: null,
   })
   modal.user = true
 }
@@ -883,19 +1153,27 @@ async function createUser() {
   } : null
   loading.action = true
   try {
+    const directEndpoint = userForm.useProxy ? {
+      host: userForm.proxyServer,
+      port: Number(userForm.proxyPort),
+      username: userForm.proxyUsername,
+      password: userForm.proxyPassword,
+    } : null
     const result = await api.createUser(selectedNodeId.value, {
       userId: userForm.userId,
       protocols: userForm.protocols,
-      socksUsername: userForm.socksUsername || null,
-      socksPassword: userForm.socksPassword || null,
+      socksUsername: userForm.useProxy ? (userForm.proxyUsername || null) : (userForm.socksUsername || null),
+      socksPassword: userForm.useProxy ? (userForm.proxyPassword || null) : (userForm.socksPassword || null),
       proxy,
+      trafficLimitBytes: gigabytesToBytes(userForm.trafficLimitGb),
+      maxSourceIps: positiveIntegerOrNull(userForm.maxSourceIps),
     })
     closeUserModal()
-    connectionData.value = result
+    connectionData.value = withDirectEndpoint(result, directEndpoint)
     connectionUser.value = result.userId
     connectionContext.value = null
     modal.connection = true
-    await Promise.all([loadUsers(true), loadNodes()])
+    await Promise.all([loadUsers(true, { force: true }), loadNodes()])
     notify('用户创建成功，连接信息已生成')
   } catch (error) {
     notify(errorMessage(error), 'error')
@@ -906,10 +1184,38 @@ async function createUser() {
   }
 }
 
+function openPolicy(user) {
+  Object.assign(policyForm, {
+    userId: user.userId,
+    trafficLimitGb: user.trafficLimitBytes ? Number((user.trafficLimitBytes / (1024 ** 3)).toFixed(3)) : null,
+    maxSourceIps: user.maxSourceIps || null,
+  })
+  modal.policy = true
+}
+
+async function savePolicy() {
+  if (!selectedNodeId.value || !policyForm.userId) return
+  loading.action = true
+  try {
+    await api.updateUserPolicy(selectedNodeId.value, policyForm.userId, {
+      trafficLimitBytes: gigabytesToBytes(policyForm.trafficLimitGb),
+      maxSourceIps: positiveIntegerOrNull(policyForm.maxSourceIps),
+    })
+    closePolicyModal()
+    await loadUsers(false, { force: true })
+    notify('用户限制策略已更新')
+  } catch (error) {
+    notify(errorMessage(error), 'error')
+  } finally {
+    loading.action = false
+  }
+}
+
 async function showConnections(user) {
   loading.action = true
   try {
-    connectionData.value = await api.connections(selectedNodeId.value, user.userId)
+    const connection = await api.connections(selectedNodeId.value, user.userId)
+    connectionData.value = withDirectEndpoint(connection, user.access)
     connectionUser.value = user.userId
     connectionContext.value = null
     modal.connection = true
@@ -956,7 +1262,7 @@ async function bindProxy() {
       },
     })
     closeProxyModal()
-    await loadUsers()
+    await loadUsers(false, { force: true })
     notify('住宅代理绑定成功')
   } catch (error) {
     notify(errorMessage(error), 'error')
@@ -967,13 +1273,501 @@ async function bindProxy() {
 }
 
 async function deleteUser(user) {
-  if (!confirm(`确认删除用户 ${user.userId}？该操作会重载远端 sing-box。`)) return
+  if (!confirm(`确认删除节点用户 ${user.userId}？\n\n将从当前节点删除该用户、重载远端 sing-box，并释放关联的自动生成记录占用。`)) return
+  deletingUserId.value = user.userId
   try {
-    await api.deleteUser(selectedNodeId.value, user.userId)
-    await Promise.all([loadUsers(), loadNodes()])
-    notify('用户已删除')
+    const result = await api.deleteUser(selectedNodeId.value, user.userId)
+    if (!result?.success) throw new Error(result?.message || '节点用户删除失败')
+    selectedUserIds.value = selectedUserIds.value.filter((userId) => userId !== user.userId)
+    selectedUserRows.value = selectedUserRows.value
+      .filter((item) => item.user.userId !== user.userId)
+    if (users.value.length === 1 && userPage.page > 1) userPage.page -= 1
+    await Promise.all([loadUsers(false, { force: true }), loadNodes(), loadAllocations()])
+    notify('节点用户已删除，关联分配占用已释放')
   } catch (error) {
     notify(errorMessage(error), 'error')
+  } finally {
+    deletingUserId.value = ''
+  }
+}
+
+function clearUserSelection() {
+  selectedUserIds.value = []
+  selectedUserRows.value = []
+  selectedUserNodeId.value = ''
+}
+
+function toggleUserSelection(userId, checked) {
+  if (selectedUserNodeId.value !== selectedNodeId.value) {
+    selectedUserIds.value = []
+    selectedUserRows.value = []
+    selectedUserNodeId.value = selectedNodeId.value
+  }
+  const next = new Set(selectedUserIds.value)
+  if (checked) {
+    next.add(userId)
+    const userIndex = users.value.findIndex((user) => user.userId === userId)
+    const user = users.value[userIndex]
+    if (user && !selectedUserRows.value.some((item) => item.user.userId === userId)) {
+      selectedUserRows.value = [...selectedUserRows.value, {
+        nodeId: selectedNodeId.value,
+        user: { ...user },
+        sequence: (userPage.page - 1) * userPage.pageSize + userIndex + 1,
+      }]
+    }
+  } else {
+    next.delete(userId)
+    selectedUserRows.value = selectedUserRows.value
+      .filter((item) => item.user.userId !== userId)
+  }
+  selectedUserIds.value = [...next]
+  if (!selectedUserIds.value.length) selectedUserNodeId.value = ''
+}
+
+function toggleCurrentPageUsers(checked) {
+  if (selectedUserNodeId.value !== selectedNodeId.value) {
+    selectedUserIds.value = []
+    selectedUserRows.value = []
+    selectedUserNodeId.value = selectedNodeId.value
+  }
+  const next = new Set(selectedUserIds.value)
+  users.value.forEach((user, userIndex) => {
+    if (checked) {
+      next.add(user.userId)
+      if (!selectedUserRows.value.some((item) => item.user.userId === user.userId)) {
+        selectedUserRows.value = [...selectedUserRows.value, {
+          nodeId: selectedNodeId.value,
+          user: { ...user },
+          sequence: (userPage.page - 1) * userPage.pageSize + userIndex + 1,
+        }]
+      }
+    } else {
+      next.delete(user.userId)
+    }
+  })
+  if (!checked) {
+    const currentIds = new Set(currentPageUserIds.value)
+    selectedUserRows.value = selectedUserRows.value
+      .filter((item) => !currentIds.has(item.user.userId))
+  }
+  selectedUserIds.value = [...next]
+  if (!selectedUserIds.value.length) selectedUserNodeId.value = ''
+}
+
+function openUserExport() {
+  if (!selectedNode.value || (!canViewSensitive.value && !canProvision.value)) return
+  excelMode.value = canViewSensitive.value ? 'export' : 'import'
+  exportForm.nodeIds = selectedNode.value ? [selectedNode.value.id] : []
+  importForm.nodeIds = allocatableNodes.value.some((node) => node.id === selectedNodeId.value)
+    ? [selectedNodeId.value]
+    : allocatableNodes.value.slice(0, 1).map((node) => node.id)
+  Object.assign(exportForm, { rangeStart: 1, rangeEnd: '' })
+  Object.assign(importForm, { file: null, fileName: '', rangeStart: 1, rangeEnd: '' })
+  importResult.value = null
+  Object.assign(exportProgress, { current: 0, total: 0, stage: '准备导出数据' })
+  Object.assign(importProgress, { current: 0, total: 0, succeeded: 0, failed: 0 })
+  modal.exportUsers = true
+}
+
+function closeUserExport() {
+  if (excelTransferBusy.value) return
+  modal.exportUsers = false
+  importForm.file = null
+  importForm.fileName = ''
+  importResult.value = null
+  if (importFileInput.value) importFileInput.value.value = ''
+  Object.assign(exportProgress, { current: 0, total: 0, stage: '准备导出数据' })
+  Object.assign(importProgress, { current: 0, total: 0, succeeded: 0, failed: 0 })
+}
+
+function changeExcelMode(mode) {
+  if (excelTransferBusy.value) return
+  excelMode.value = mode
+  importResult.value = null
+}
+
+function setTransferNodes(action) {
+  if (excelTransferBusy.value) return
+  const target = excelMode.value === 'import' ? importForm : exportForm
+  if (action === 'all') target.nodeIds = transferNodes.value.map((node) => node.id)
+  if (action === 'clear') target.nodeIds = []
+  if (action === 'current') {
+    target.nodeIds = transferNodes.value.some((node) => node.id === selectedNodeId.value)
+      ? [selectedNodeId.value]
+      : []
+  }
+}
+
+function handleImportFile(event) {
+  const file = event.target.files?.[0] || null
+  importForm.file = file
+  importForm.fileName = file?.name || ''
+  importResult.value = null
+}
+
+async function withExportRequestTimeout(requestFactory, timeoutMs, timeoutMessage) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await requestFactory(controller.signal)
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new Error(timeoutMessage)
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function loadUsersForExport(nodeId) {
+  return await withExportRequestTimeout((signal) => api.usersForExport(nodeId, {
+    keyword: userPage.keyword.trim(),
+    ip: userPage.ip.trim(),
+    sort: userPage.sort,
+  }, { signal }), 60000, '读取节点用户超时，请稍后重试或勾选需要导出的用户')
+}
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const results = new Array(items.length)
+  let cursor = 0
+  async function worker() {
+    while (cursor < items.length) {
+      const index = cursor
+      cursor += 1
+      results[index] = await mapper(items[index], index)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker))
+  return results
+}
+
+function safeExportFilename(value) {
+  return String(value || '节点').replace(/[\\/:*?"<>|]/g, '-').trim() || '节点'
+}
+
+function exportTimestamp(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`
+}
+
+async function exportNodeUsers() {
+  if (!canViewSensitive.value || exportingUsers.value) return
+  const exportingSelectedUsers = selectedUserCount.value > 0
+  const requestedNodeIds = exportingSelectedUsers ? [selectedNodeId.value] : exportForm.nodeIds
+  const selectedNodes = requestedNodeIds
+    .map((nodeId) => nodes.value.find((node) => node.id === nodeId))
+    .filter(Boolean)
+  if (!selectedNodes.length) {
+    notify('请至少选择一个导出节点', 'error')
+    return
+  }
+  exportingUsers.value = true
+  Object.assign(exportProgress, { current: 0, total: 0, stage: '正在读取节点用户' })
+  try {
+    const scenario = selectedExportScenario.value
+    const modulePromise = Promise.all([import('exceljs'), import('qrcode')])
+    modulePromise.catch(() => {})
+    let combinedUsers
+    let exportUsers
+    if (exportingSelectedUsers) {
+      const selectedNode = selectedNodes[0]
+      exportUsers = selectedRowsForExport(selectedUserRows.value, selectedNode)
+      combinedUsers = exportUsers
+      Object.assign(exportProgress, {
+        current: exportUsers.length,
+        total: exportUsers.length,
+        stage: '已读取勾选用户',
+      })
+    } else {
+      Object.assign(exportProgress, { current: 0, total: selectedNodes.length, stage: '正在读取节点用户' })
+      const usersByNode = await mapWithConcurrency(selectedNodes, 3, async (node) => {
+        try {
+          return { node, users: await loadUsersForExport(node.id) }
+        } finally {
+          exportProgress.current += 1
+        }
+      })
+      combinedUsers = usersByNode.flatMap(({ node, users: nodeUsers }) =>
+        nodeUsers.map((user) => ({ node, user })))
+      const sequencedUsers = combinedUsers.map((item, index) => ({ ...item, sequence: index + 1 }))
+      exportUsers = selectSequenceRange(sequencedUsers, exportForm.rangeStart, exportForm.rangeEnd)
+    }
+    if (combinedUsers.length === 0) {
+      notify('当前搜索条件下没有可导出的节点用户', 'error')
+      return
+    }
+    if (exportUsers.length === 0) {
+      notify(exportingSelectedUsers
+        ? '勾选的用户已不在当前搜索结果中，请重新选择'
+        : `序号范围内没有用户，当前搜索结果共 ${combinedUsers.length} 条`, 'error')
+      return
+    }
+
+    let unavailableCount = 0
+    let failedCount = 0
+    const directExportScenarios = new Set(['ipDirect', 'ipDirectSocks'])
+    const directData = new Map()
+    const connectionUsers = exportUsers.filter((item) => {
+      if (!directExportScenarios.has(scenario.key)) return true
+      const data = buildConnectionExportData(
+        withDirectEndpoint({}, item.user.access),
+        scenario.key,
+      )
+      directData.set(connectionLookupKey(item.node.id, item.user.userId), data)
+      return !data.link
+    })
+    const connectionLookup = new Map()
+    const batchJobs = buildConnectionBatchJobs(connectionUsers, 100)
+    Object.assign(exportProgress, {
+      current: 0,
+      total: connectionUsers.length,
+      stage: connectionUsers.length ? '正在批量读取连接信息' : '连接信息读取完成',
+    })
+    await mapWithConcurrency(batchJobs, 4, async (job) => {
+      try {
+        const results = await withExportRequestTimeout(
+          (signal) => api.connectionsBatch(job.nodeId, job.userIds, { signal }),
+          30000,
+          '批量读取连接信息超时',
+        )
+        ;(results || []).forEach((result) => {
+          connectionLookup.set(connectionLookupKey(job.nodeId, result.userId), result)
+        })
+      } catch (error) {
+        job.userIds.forEach((userId) => connectionLookup.set(
+          connectionLookupKey(job.nodeId, userId),
+          { userId, connection: null, error: errorMessage(error) },
+        ))
+      } finally {
+        exportProgress.current += job.userIds.length
+      }
+    })
+
+    const rows = exportUsers.map((item) => {
+      let connectionData = { ip: '', port: '', username: '', password: '', link: '' }
+      const key = connectionLookupKey(item.node.id, item.user.userId)
+      const localDirectData = directData.get(key)
+      if (localDirectData?.link) {
+        connectionData = localDirectData
+      } else {
+        const result = connectionLookup.get(key)
+        if (result?.connection) {
+          const connection = result.connection
+          connectionData = buildConnectionExportData(
+            withDirectEndpoint(connection, item.user.access),
+            scenario.key,
+          )
+          if (!connectionData.link) unavailableCount += 1
+        } else {
+          failedCount += 1
+        }
+      }
+      return {
+        sequence: item.sequence,
+        nodeName: item.node.name,
+        ...connectionData,
+        createdAt: item.user.createdAt,
+      }
+    })
+
+    const [excelModule, qrModule] = await modulePromise
+    const ExcelJS = excelModule.default || excelModule
+    const QRCode = qrModule.default || qrModule
+    let qrFailedCount = 0
+    Object.assign(exportProgress, {
+      current: 0,
+      total: rows.length,
+      stage: '正在生成二维码',
+    })
+    const qrConcurrency = Math.min(12, Math.max(6, Number(globalThis.navigator?.hardwareConcurrency || 8)))
+    const qrImages = await mapWithConcurrency(rows, qrConcurrency, async (rowData) => {
+      try {
+        if (!rowData.link) return ''
+        return await QRCode.toDataURL(rowData.link, {
+          width: 128,
+          margin: 1,
+          errorCorrectionLevel: 'M',
+          color: { dark: '#101827', light: '#ffffff' },
+        })
+      } catch {
+        qrFailedCount += 1
+        return ''
+      } finally {
+        exportProgress.current += 1
+      }
+    })
+    const workbook = new ExcelJS.Workbook()
+    workbook.creator = '牛速控制中心'
+    workbook.created = new Date()
+    const worksheet = workbook.addWorksheet('节点用户', {
+      views: [{ state: 'frozen', ySplit: 1 }],
+      properties: { defaultRowHeight: 20 },
+    })
+    worksheet.columns = [
+      { header: '序号', key: 'sequence', width: 9 },
+      ...(selectedNodes.length > 1 ? [{ header: '节点', key: 'nodeName', width: 24 }] : []),
+      { header: 'IP', key: 'ip', width: 24 },
+      { header: '连接端口', key: 'port', width: 13 },
+      { header: '连接账号', key: 'username', width: 29 },
+      { header: '连接密码', key: 'password', width: 24 },
+      { header: '代理链接', key: 'link', width: 80 },
+      { header: '二维码标签', key: 'qr', width: 18 },
+      { header: '创建时间', key: 'createdAt', width: 24 },
+    ]
+    const header = worksheet.getRow(1)
+    header.height = 25
+    header.font = { bold: true, color: { argb: 'FFFFFFFF' } }
+    header.alignment = { vertical: 'middle', horizontal: 'center' }
+    header.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF256D85' } }
+    header.eachCell((cell) => {
+      cell.border = { bottom: { style: 'thin', color: { argb: 'FF174D60' } } }
+    })
+
+    rows.forEach((rowData, rowIndex) => {
+      const excelRow = worksheet.addRow({
+        sequence: rowData.sequence,
+        nodeName: rowData.nodeName,
+        ip: rowData.ip,
+        port: rowData.port,
+        username: rowData.username,
+        password: rowData.password,
+        link: rowData.link,
+        qr: rowData.link ? scenario.label : '',
+        createdAt: formatDate(rowData.createdAt),
+      })
+      excelRow.height = rowData.link ? 76 : 25
+      excelRow.alignment = { vertical: 'middle', wrapText: true }
+      excelRow.getCell('sequence').alignment = { vertical: 'middle', horizontal: 'center' }
+      excelRow.getCell('port').alignment = { vertical: 'middle', horizontal: 'center' }
+      excelRow.getCell('qr').alignment = { vertical: 'bottom', horizontal: 'center' }
+      excelRow.eachCell((cell) => {
+        cell.border = {
+          bottom: { style: 'hair', color: { argb: 'FFDCE5EA' } },
+          right: { style: 'hair', color: { argb: 'FFE7EDF0' } },
+        }
+      })
+      const qrDataUrl = qrImages[rowIndex]
+      if (qrDataUrl) {
+        const imageId = workbook.addImage({ base64: qrDataUrl, extension: 'png' })
+        const qrColumnIndex = worksheet.getColumn('qr').number - 1
+        worksheet.addImage(imageId, {
+          tl: { col: qrColumnIndex + 0.25, row: excelRow.number - 0.92 },
+          ext: { width: 88, height: 88 },
+        })
+      }
+    })
+    worksheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: worksheet.columnCount } }
+
+    Object.assign(exportProgress, { current: 0, total: 1, stage: '正在打包 Excel 文件' })
+    const buffer = await workbook.xlsx.writeBuffer()
+    exportProgress.current = 1
+    const blob = new Blob([buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `${exportTimestamp()}-${safeExportFilename(scenario.label)}.xlsx`
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 60000)
+    modal.exportUsers = false
+    const skipped = unavailableCount + failedCount + qrFailedCount
+    notify(skipped
+      ? `Excel 已导出，共 ${rows.length} 条，${skipped} 条二维码或连接信息为空`
+      : `Excel 已导出，共 ${rows.length} 条节点用户`)
+  } catch (error) {
+    notify(`导出失败：${errorMessage(error)}`, 'error')
+  } finally {
+    exportingUsers.value = false
+    Object.assign(exportProgress, { current: 0, total: 0, stage: '准备导出数据' })
+  }
+}
+
+async function importNodeUsers() {
+  if (!canProvision.value || importingUsers.value) return
+  const selectedNodes = importForm.nodeIds
+    .map((nodeId) => allocatableNodes.value.find((node) => node.id === nodeId))
+    .filter(Boolean)
+  if (!selectedNodes.length) {
+    notify('请至少选择一个可用的导入节点', 'error')
+    return
+  }
+  if (!importForm.file) {
+    notify('请选择要导入的 Excel 文件', 'error')
+    return
+  }
+
+  importingUsers.value = true
+  importResult.value = null
+  Object.assign(importProgress, { current: 0, total: 0, succeeded: 0, failed: 0 })
+  try {
+    const excelModule = await import('exceljs')
+    const ExcelJS = excelModule.default || excelModule
+    const workbook = new ExcelJS.Workbook()
+    await workbook.xlsx.load(await importForm.file.arrayBuffer())
+    const tables = workbook.worksheets.map((worksheet) => ({
+      name: worksheet.name,
+      rows: worksheet.getSheetValues().slice(1).map((row) => Array.isArray(row) ? row.slice(1) : []),
+    }))
+    const parsedRows = parseExcelTransferTables(tables)
+    const selectedRows = filterImportedRowsBySequence(
+      parsedRows,
+      importForm.rangeStart,
+      importForm.rangeEnd,
+    )
+    if (!selectedRows.length) {
+      throw new Error(`序号范围内没有可导入数据，Excel 中共有 ${parsedRows.length} 条有效数据`)
+    }
+
+    const groups = distributeRowsRoundRobin(selectedRows, selectedNodes.map((node) => node.id))
+    const jobs = groups.flatMap((group) => chunkRows(group.rows, 50).map((rows) => ({
+      nodeId: group.nodeId,
+      nodeName: selectedNodes.find((node) => node.id === group.nodeId)?.name || group.nodeId,
+      rows,
+    })))
+    importProgress.total = selectedRows.length
+    const errors = []
+
+    for (const job of jobs) {
+      const input = proxyInputFromRows(job.rows)
+      try {
+        const response = await api.provisionProxyBatch({
+          input,
+          protocols: ['vless', 'vmess', 'socks'],
+          preferredNodeId: job.nodeId,
+        }, createIdempotencyKey('excel-import'))
+        const succeeded = Number(response.succeeded || 0)
+        const failed = Number(response.failed || 0)
+        importProgress.succeeded += succeeded
+        importProgress.failed += failed
+        ;(response.results || []).filter((result) => result.error).slice(0, 3).forEach((result) => {
+          errors.push(`${job.nodeName} · 序号 ${job.rows[result.rowNumber - 1]?.sequence || '?'}：${localizedErrorMessage(result.error)}`)
+        })
+      } catch (error) {
+        importProgress.failed += job.rows.length
+        let message = errorMessage(error)
+        job.rows.forEach((row) => { message = message.split(row.password).join('***') })
+        errors.push(`${job.nodeName}：${message}`)
+      } finally {
+        importProgress.current += job.rows.length
+      }
+    }
+
+    importResult.value = {
+      total: selectedRows.length,
+      succeeded: importProgress.succeeded,
+      failed: importProgress.failed,
+      errors: errors.slice(0, 6),
+    }
+    await Promise.all([loadUsers(true, { force: true }), loadNodes(), loadAllocations()])
+    notify(importProgress.failed
+      ? `导入完成：成功 ${importProgress.succeeded} 条，失败 ${importProgress.failed} 条`
+      : `导入完成：成功生成 ${importProgress.succeeded} 条节点用户`, importProgress.failed ? 'error' : 'success')
+  } catch (error) {
+    notify(`导入失败：${errorMessage(error)}`, 'error')
+  } finally {
+    importingUsers.value = false
   }
 }
 
@@ -983,11 +1777,10 @@ async function copy(value) {
   notify('已复制到剪贴板')
 }
 
-function nextPage(offset) {
+async function nextPage(offset) {
   const target = userPage.page + offset
-  if (target < 1 || target > totalPages.value) return
-  userPage.page = target
-  loadUsers()
+  if (target < 1 || target > totalPages.value || loading.users) return
+  await loadUsers(false, { page: target })
 }
 
 function formatBytes(value) {
@@ -1003,6 +1796,20 @@ function formatBytes(value) {
   return `${size.toFixed(size >= 100 ? 0 : 1)} ${units[index]}`
 }
 
+function gigabytesToBytes(value) {
+  const gigabytes = Number(value)
+  return Number.isFinite(gigabytes) && gigabytes > 0 ? Math.round(gigabytes * (1024 ** 3)) : null
+}
+
+function positiveIntegerOrNull(value) {
+  const number = Number(value)
+  return Number.isInteger(number) && number > 0 ? number : null
+}
+
+function userPolicyStatus(status) {
+  return ({ active: '正常', traffic_limited: '流量已限', device_limited: '设备已限' })[status] || '正常'
+}
+
 function formatDate(value) {
   return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
 }
@@ -1013,6 +1820,18 @@ function statusText(status) {
 
 function allocationStateText(state) {
   return ({ ACTIVE: '已生成', PROVISIONING: '开通中', RETRYABLE: '待重试', FAILED: '失败', PENDING: '待分配' })[state] || state
+}
+
+function accessRegion(access) {
+  if (!access) return '-'
+  if (access.countryCode === 'ZZ' || access.countryName === '未知') return '待识别'
+  return [access.countryName, access.cityName].filter(Boolean).join(' · ') || access.countryCode || '-'
+}
+
+function accessCredential(access) {
+  if (!access?.username && !access?.password) return '-'
+  if (!revealListCredentials.value) return '••••••••'
+  return [access.username || '-', access.password || '-'].join(' / ')
 }
 
 onMounted(async () => {
@@ -1054,6 +1873,7 @@ onBeforeUnmount(() => {
         :key="node.id"
         class="node-nav"
         :class="{ selected: node.id === selectedNodeId }"
+        @mouseenter="prefetchNodeUsers(node.id)"
         @click="selectNode(node.id)"
       >
         <span class="status-dot" :class="node.status"></span>
@@ -1111,6 +1931,21 @@ onBeforeUnmount(() => {
           <span :class="selectedNode.enabled ? 'positive' : 'danger-text'"><Power :size="12" />{{ selectedNode.enabled ? '参与调度' : '已停用' }}</span>
           <span v-if="selectedNode.maintenance" class="warning"><Wrench :size="12" />维护模式</span>
         </div>
+        <div v-if="canViewNodeToken" class="node-token-row">
+          <span>API Token</span>
+          <code>{{ nodeTokenNodeId === selectedNode.id && revealNodeToken ? nodeToken : '••••••••••••••••' }}</code>
+          <button
+            v-if="nodeTokenNodeId !== selectedNode.id || !nodeToken"
+            class="icon-action"
+            :disabled="loadingNodeToken"
+            title="查看节点 Token"
+            @click="loadNodeToken"
+          ><RefreshCw v-if="loadingNodeToken" class="spin" :size="14" /><Eye v-else :size="14" />{{ loadingNodeToken ? '读取中' : '查看 Token' }}</button>
+          <template v-else>
+            <button class="icon-button token-icon-button" :title="revealNodeToken ? '隐藏节点 Token' : '显示节点 Token'" @click="revealNodeToken = !revealNodeToken"><EyeOff v-if="revealNodeToken" :size="14" /><Eye v-else :size="14" /></button>
+            <button class="icon-button token-icon-button" title="复制节点 Token" @click="copy(nodeToken)"><Copy :size="14" /></button>
+          </template>
+        </div>
         <p v-if="selectedNode.lastError" class="node-error">{{ localizedErrorMessage(selectedNode.lastError) }}</p>
       </section>
 
@@ -1119,7 +1954,7 @@ onBeforeUnmount(() => {
           <div><p class="eyebrow">批量 SOCKS 节点生成</p><h2>节点信息输入</h2></div>
           <div class="batch-actions">
             <button v-if="canProvision" class="button ghost icon-text" :disabled="batchConnectionCount === 0" @click="copyAllBatchLinks"><Copy :size="14" />复制所有链接</button>
-            <button v-if="canProvision" class="button primary icon-text" :disabled="loading.action" @click="provisionProxyBatch"><Link :size="15" />生成三协议节点</button>
+            <button v-if="canProvision" class="button primary icon-text" :disabled="loading.action" @click="provisionProxyBatch"><Link :size="15" />生成节点连接</button>
           </div>
         </div>
         <div class="proxy-batch-body">
@@ -1175,16 +2010,11 @@ onBeforeUnmount(() => {
                 <div><span>节点入口 (VLESS/VMess)</span><strong>{{ result.allocation?.nodeHost || '-' }}</strong></div>
                   <div><span>分配节点</span><strong>{{ result.allocation?.nodeName || '-' }}</strong></div>
                 </div>
-                <div class="batch-links">
-                  <div v-for="linkItem in batchConnectionLinks(result)" :key="linkItem.protocol" :class="['connection-item', linkItem.key === 'socks5' ? 'recommended' : '']">
-                    <div class="connection-label">
-                      <span class="protocol-name">{{ linkItem.protocol }}</span>
-                      <small class="protocol-hint">{{ protocolHint(linkItem.key) }}</small>
-                    </div>
-                    <code>{{ revealBatchSecrets ? linkItem.value : maskedLink(linkItem.value) }}</code>
-                    <button :title="`复制 ${linkItem.protocol}`" @click="copy(linkItem.value)"><Copy :size="13" /></button>
-                  </div>
-                </div>
+                <ConnectionLinksPanel
+                  :connection="withDirectEndpoint(result.allocation?.connection, { ip: result.sourceIp, port: result.sourcePort })"
+                  :reveal-secrets="revealBatchSecrets"
+                  @copy="copy"
+                />
               </template>
             </article>
           </div>
@@ -1194,21 +2024,30 @@ onBeforeUnmount(() => {
       <section v-if="activeView === 'allocations'" class="panel allocation-panel">
         <div class="panel-heading">
           <div><p class="eyebrow">直出节点生成</p><h2>自动生成记录</h2></div>
-          <button v-if="canProvision" class="button primary icon-text" :disabled="allocatableNodes.length === 0" @click="openProvision"><Plus :size="15" />生成直出节点</button>
+          <div class="table-tools">
+            <input v-model="allocationPage.ip" placeholder="按 IP 搜索" @keyup.enter="loadAllocations(true)" />
+            <button class="button ghost icon-text" @click="loadAllocations(true)"><Search :size="14" />搜索</button>
+            <button v-if="canViewSensitive" class="button ghost icon-text" :title="revealListCredentials ? '隐藏认证信息' : '显示认证信息'" @click="revealListCredentials = !revealListCredentials"><EyeOff v-if="revealListCredentials" :size="14" /><Eye v-else :size="14" />认证</button>
+            <button v-if="canProvision" class="button primary icon-text" :disabled="allocatableNodes.length === 0" @click="openProvision"><Plus :size="15" />生成直出节点</button>
+          </div>
         </div>
         <div class="table-wrap">
           <table class="allocation-table">
-            <thead><tr><th>用户</th><th>状态</th><th>节点管理器</th><th>出口模式</th><th>创建时间</th><th>操作</th></tr></thead>
+            <thead><tr><th class="sequence-column">序号</th><th>用户</th><th>状态</th><th>节点管理器</th><th>IP</th><th>端口</th><th>认证信息</th><th>地区</th><th>创建时间</th><th>操作</th></tr></thead>
             <tbody>
-              <tr v-if="loading.allocations"><td colspan="6" class="empty-state">正在加载自动开通记录...</td></tr>
-              <tr v-else-if="allocations.length === 0"><td colspan="6" class="empty-state">暂无自动开通记录</td></tr>
-              <tr v-for="allocation in allocations" :key="allocation.id">
+              <tr v-if="loading.allocations"><td colspan="10" class="empty-state">正在加载自动开通记录...</td></tr>
+              <tr v-else-if="allocations.length === 0"><td colspan="10" class="empty-state">暂无匹配的自动开通记录</td></tr>
+              <tr v-for="(allocation, allocationIndex) in allocations" :key="allocation.id">
+                <td class="sequence-cell">{{ (allocationPage.page - 1) * allocationPage.pageSize + allocationIndex + 1 }}</td>
                 <td><div class="user-cell"><span class="avatar">{{ allocation.userId.slice(0, 2).toUpperCase() }}</span><span><strong>{{ allocation.userId }}</strong><small>{{ allocation.protocols.join(' / ') }}</small></span></div></td>
                 <td><span class="allocation-state" :class="allocation.state.toLowerCase()">{{ allocationStateText(allocation.state) }}</span><small v-if="allocation.lastError" class="error-detail" :title="localizedErrorMessage(allocation.lastError)">{{ localizedErrorMessage(allocation.lastError) }}</small></td>
                 <td><strong>{{ allocation.nodeName || '-' }}</strong><small class="table-subtext">{{ allocation.nodeHost || '等待节点' }}</small></td>
-                <td><button v-if="allocation.provisioningMode === 'UPSTREAM_SOCKS'" class="link-button" @click="showAllocationProxy(allocation)">上游 SOCKS</button><strong v-else>VPS 直出</strong><small class="table-subtext">{{ allocation.provisioningMode === 'UPSTREAM_SOCKS' ? `住宅:${allocation.sourceIp || '-'} · 入口:${allocation.nodeHost || '-'}` : (allocation.nodeHost || '等待选择节点') }}</small></td>
+                <td><strong>{{ allocation.access?.ip || allocation.sourceIp || allocation.nodeHost || '-' }}</strong><small class="table-subtext">{{ allocation.provisioningMode === 'UPSTREAM_SOCKS' ? '住宅出口' : '节点入口' }}</small></td>
+                <td>{{ allocation.access?.port || allocation.sourcePort || '-' }}</td>
+                <td><span class="credential-text">{{ canViewSensitive ? accessCredential(allocation.access) : '-' }}</span></td>
+                <td><strong>{{ accessRegion(allocation.access) }}</strong><small v-if="allocation.access?.countryCode" class="table-subtext">{{ allocation.access.countryCode }}</small></td>
                 <td>{{ formatDate(allocation.createdAt) }}</td>
-                <td><div class="row-actions"><button v-if="allocation.state === 'ACTIVE' && canViewSensitive" class="icon-action" title="查看连接" @click="showAllocationConnection(allocation)"><Link :size="14" />连接</button><button v-if="['RETRYABLE','FAILED','PENDING'].includes(allocation.state) && canProvision" class="icon-action" :disabled="loading.action" title="重新开通" @click="retryAllocation(allocation)"><RefreshCw :size="14" />重试</button></div></td>
+                <td><div class="row-actions"><button v-if="allocation.state === 'ACTIVE' && canViewSensitive" class="icon-action" title="查看连接" @click="showAllocationConnection(allocation)"><Link :size="14" />连接</button><template v-if="['RETRYABLE','FAILED','PENDING'].includes(allocation.state) && canProvision"><button class="icon-action" :disabled="loading.action" title="重新开通" @click="retryAllocation(allocation)"><RefreshCw :size="14" />重试</button><button class="icon-action danger-text" :disabled="loading.action" title="删除记录" @click="deleteAllocation(allocation)"><Trash2 :size="14" />删除</button></template></div></td>
               </tr>
             </tbody>
           </table>
@@ -1251,33 +2090,49 @@ onBeforeUnmount(() => {
           <div><p class="eyebrow">节点用户管理</p><h2>节点用户</h2></div>
           <div class="table-tools">
             <input v-model="userPage.keyword" placeholder="搜索用户 ID" @keyup.enter="loadUsers(true)" />
+            <input v-model="userPage.ip" placeholder="按 IP 搜索" @keyup.enter="loadUsers(true)" />
+            <select v-model="userPage.sort" aria-label="创建时间排序" @change="loadUsers(true)">
+              <option value="createdDesc">最新创建</option>
+              <option value="createdAsc">最早创建</option>
+            </select>
             <button class="button ghost icon-text" @click="loadUsers(true)"><Search :size="14" />搜索</button>
-            <button class="button ghost icon-text" :disabled="loading.users || !selectedNode" @click="loadUsers(false)"><RefreshCw :size="14" />刷新</button>
+            <button v-if="canViewSensitive" class="button ghost icon-text" :title="revealListCredentials ? '隐藏认证信息' : '显示认证信息'" @click="revealListCredentials = !revealListCredentials"><EyeOff v-if="revealListCredentials" :size="14" /><Eye v-else :size="14" />认证</button>
+            <button v-if="selectedUserCount" class="selection-count" type="button" title="清空已选用户" @click="clearUserSelection">已选 {{ selectedUserCount }} 条 <X :size="12" /></button>
+            <button v-if="canViewSensitive || canProvision" class="button ghost icon-text" :disabled="loading.users || !selectedNode" @click="openUserExport"><FileSpreadsheet :size="14" />{{ selectedUserCount ? `导出所选 ${selectedUserCount} 条` : 'Excel 导入/导出' }}</button>
+            <button class="button ghost icon-text" :disabled="loading.users || !selectedNode" @click="loadUsers(false, { force: true })"><RefreshCw :size="14" />刷新</button>
           </div>
         </div>
 
         <div class="table-wrap">
           <table>
-            <thead><tr><th>用户</th><th>协议</th><th>出口模式</th><th>流量</th><th>创建时间</th><th>操作</th></tr></thead>
+            <thead><tr><th class="selection-column"><input type="checkbox" title="选择当前页" aria-label="选择当前页节点用户" :checked="allCurrentPageUsersSelected" :indeterminate="someCurrentPageUsersSelected && !allCurrentPageUsersSelected" :disabled="loading.users || users.length === 0" @change="toggleCurrentPageUsers($event.target.checked)" /></th><th class="sequence-column">序号</th><th>用户</th><th>协议</th><th>IP</th><th>端口</th><th>认证信息</th><th>地区</th><th>出口模式</th><th>流量</th><th>在线设备</th><th>状态</th><th>创建时间</th><th class="sticky-actions">操作</th></tr></thead>
             <tbody>
-              <tr v-if="loading.users"><td colspan="6" class="empty-state">正在加载节点用户…</td></tr>
-              <tr v-else-if="userLoadError"><td colspan="6" class="empty-state error-detail">节点用户加载失败：{{ userLoadError }}</td></tr>
-              <tr v-else-if="!selectedNode"><td colspan="6" class="empty-state">请先添加并选择一个节点</td></tr>
-              <tr v-else-if="users.length === 0"><td colspan="6" class="empty-state">当前节点暂无用户</td></tr>
-              <tr v-for="user in users" :key="user.userId">
+              <tr v-if="loading.users && users.length === 0"><td colspan="14" class="empty-state">正在加载节点用户…</td></tr>
+              <tr v-else-if="userLoadError && users.length === 0"><td colspan="14" class="empty-state error-detail">节点用户加载失败：{{ userLoadError }}</td></tr>
+              <tr v-else-if="!selectedNode"><td colspan="14" class="empty-state">请先添加并选择一个节点</td></tr>
+              <tr v-else-if="users.length === 0"><td colspan="14" class="empty-state">当前节点暂无匹配用户</td></tr>
+              <tr v-for="(user, userIndex) in users" :key="user.userId" :class="{ 'selected-user-row': selectedUserIds.includes(user.userId) }">
+                <td class="selection-cell"><input type="checkbox" :aria-label="`选择节点用户 ${user.userId}`" :checked="selectedUserIds.includes(user.userId)" @change="toggleUserSelection(user.userId, $event.target.checked)" /></td>
+                <td class="sequence-cell">{{ (userPage.page - 1) * userPage.pageSize + userIndex + 1 }}</td>
                 <td><div class="user-cell"><span class="avatar">{{ user.userId.slice(0, 2).toUpperCase() }}</span><span><strong>{{ user.userId }}</strong><small>{{ user.socksUsername || '自动凭据' }}</small></span></div></td>
                 <td><span v-for="protocol in user.protocols" :key="protocol" class="protocol-tag">{{ protocol }}</span></td>
+                <td><strong>{{ user.access?.ip || selectedNode?.host || '-' }}</strong></td>
+                <td>{{ user.access?.port || '-' }}</td>
+                <td><span class="credential-text">{{ canViewSensitive ? accessCredential(user.access) : '-' }}</span></td>
+                <td><strong>{{ accessRegion(user.access) }}</strong><small v-if="user.access?.countryCode" class="table-subtext">{{ user.access.countryCode }}</small></td>
                 <td><span :class="user.proxyBound ? 'positive' : 'muted'">{{ user.proxyBound ? user.proxyServer : '直连出口' }}</span></td>
-                <td><strong>{{ formatBytes(user.total) }}</strong><small class="traffic-split">↑ {{ formatBytes(user.upload) }} / ↓ {{ formatBytes(user.download) }}</small></td>
+                <td><strong>{{ formatBytes(user.total) }}<template v-if="user.trafficLimitBytes"> / {{ formatBytes(user.trafficLimitBytes) }}</template></strong><small class="traffic-split">↑ {{ formatBytes(user.upload) }} / ↓ {{ formatBytes(user.download) }}</small></td>
+                <td><strong>{{ user.activeSourceIps?.length || 0 }}<template v-if="user.maxSourceIps"> / {{ user.maxSourceIps }}</template></strong><small class="traffic-split">按同时来源 IP 统计</small></td>
+                <td><span class="policy-status" :class="user.status">{{ userPolicyStatus(user.status) }}</span></td>
                 <td>{{ formatDate(user.createdAt) }}</td>
-                <td><div class="row-actions"><button v-if="canViewSensitive" @click="showConnections(user)">连接</button><button v-if="canManageUsers" @click="openProxy(user)">代理</button><button v-if="canManageUsers" class="danger-text" @click="deleteUser(user)">删除</button></div></td>
+                <td class="sticky-actions"><div class="row-actions"><button v-if="canViewSensitive" @click="showConnections(user)">连接</button><button v-if="canManageUsers" @click="openProxy(user)">代理</button><button v-if="canManageUsers" class="icon-action" title="编辑流量和设备限制" @click="openPolicy(user)"><Settings2 :size="14" />限制</button><button v-if="canDeleteUsers" class="icon-action danger-text delete-user-action" :disabled="Boolean(deletingUserId)" :title="deletingUserId === user.userId ? '正在删除节点用户' : '删除节点用户'" @click="deleteUser(user)"><RefreshCw v-if="deletingUserId === user.userId" class="spin" :size="14" /><Trash2 v-else :size="14" />{{ deletingUserId === user.userId ? '删除中' : '删除' }}</button></div></td>
               </tr>
             </tbody>
           </table>
         </div>
         <div class="pagination">
-          <span>共 {{ userPage.total }} 个用户</span>
-          <div><button :disabled="userPage.page <= 1" @click="nextPage(-1)">上一页</button><strong>{{ userPage.page }} / {{ totalPages }}</strong><button :disabled="userPage.page >= totalPages" @click="nextPage(1)">下一页</button></div>
+          <span>共 {{ userPage.total }} 个用户 <small v-if="loading.users" class="page-loading"><RefreshCw class="spin" :size="12" />读取中</small><small v-else-if="userLoadError" class="page-load-error">{{ userLoadError }}</small></span>
+          <div><button :disabled="userPage.page <= 1 || loading.users" @click="nextPage(-1)">上一页</button><strong>{{ userPage.page }} / {{ totalPages }}</strong><button :disabled="userPage.page >= totalPages || loading.users" @click="nextPage(1)">下一页</button></div>
         </div>
       </section>
 
@@ -1354,7 +2209,7 @@ onBeforeUnmount(() => {
         <label>API 地址<input v-model.trim="nodeForm.baseUrl" required placeholder="http://server:8088" /></label>
         <label>访问令牌<input v-model.trim="nodeForm.token" required type="password" autocomplete="new-password" /></label>
         <label>最大用户数<input v-model.number="nodeForm.maxUsers" required type="number" min="1" max="100000" /></label>
-        <p class="form-note">控制中心会调用 <code>/api/agent/info</code> 与心跳接口验证节点，访问令牌不会返回给前端。</p>
+        <p class="form-note">控制中心会调用 <code>/api/agent/info</code> 与心跳接口验证节点，并加密保存访问令牌；仅允许管理员和节点运维账号按需查看。</p>
         <div class="modal-actions"><button type="button" class="button ghost" @click="closeNodeModal">取消</button><button class="button primary" :disabled="loading.action">验证并注册</button></div>
       </form>
     </div>
@@ -1393,6 +2248,8 @@ onBeforeUnmount(() => {
           <label>指定节点管理器（可选）
             <select v-model="provisionForm.preferredNodeId"><option value="">自动选择最空闲节点</option><option v-for="node in allocatableNodes" :key="node.id" :value="node.id">{{ node.name }} · {{ node.userCount }}/{{ node.maxUsers }}</option></select>
           </label>
+          <label>流量额度（GB）<input v-model.number="provisionForm.trafficLimitGb" type="number" min="0" step="0.1" placeholder="留空不限" /></label>
+          <label>最大同时来源 IP 数<input v-model.number="provisionForm.maxSourceIps" type="number" min="0" max="1000" step="1" placeholder="留空不限" /></label>
         </div>
         <fieldset><legend>返回协议</legend><div class="checkbox-row"><label v-for="protocol in ['vless','vmess','socks']" :key="protocol"><input v-model="provisionForm.protocols" type="checkbox" :value="protocol" />{{ protocol.toUpperCase() }}</label></div></fieldset>
         <div class="modal-actions"><button type="button" class="button ghost" @click="modal.provision = false">取消</button><button class="button primary icon-text" :disabled="loading.action || provisionForm.protocols.length === 0"><Plus :size="15" />生成节点</button></div>
@@ -1413,11 +2270,92 @@ onBeforeUnmount(() => {
     <div v-if="modal.user" class="modal-backdrop" @mousedown.self="closeUserModal">
       <form class="modal-card wide-card" @submit.prevent="createUser">
         <div class="modal-heading"><div><p class="eyebrow">手动创建用户</p><h2>手动创建节点用户</h2></div><button type="button" class="close-button" title="关闭" @click="closeUserModal"><X :size="17" /></button></div>
-        <div class="form-grid"><label>用户 ID<input v-model.trim="userForm.userId" required pattern="[A-Za-z0-9._-]+" /></label><label>SOCKS 用户名（可选）<input v-model.trim="userForm.socksUsername" autocomplete="off" /></label><label>SOCKS 密码（可选）<input v-model="userForm.socksPassword" type="password" autocomplete="new-password" /></label></div>
+        <div class="form-grid"><label>用户 ID<input v-model.trim="userForm.userId" required pattern="[A-Za-z0-9._-]+" /></label><label>SOCKS 用户名（可选）<input v-model.trim="userForm.socksUsername" autocomplete="off" /></label><label>SOCKS 密码（可选）<input v-model="userForm.socksPassword" type="password" autocomplete="new-password" /></label><label>流量额度（GB）<input v-model.number="userForm.trafficLimitGb" type="number" min="0" step="0.1" placeholder="留空不限" /></label><label>最大同时来源 IP 数<input v-model.number="userForm.maxSourceIps" type="number" min="0" max="1000" step="1" placeholder="留空不限" /></label></div>
         <fieldset><legend>启用协议</legend><div class="checkbox-row"><label v-for="protocol in ['vless','vmess','socks']" :key="protocol"><input v-model="userForm.protocols" type="checkbox" :value="protocol" />{{ protocol.toUpperCase() }}</label></div></fieldset>
         <label class="toggle-row"><input v-model="userForm.useProxy" type="checkbox" /><span>创建时绑定住宅 SOCKS5 出口</span></label>
-        <div v-if="userForm.useProxy" class="form-grid proxy-grid"><label>代理服务器<input v-model.trim="userForm.proxyServer" required /></label><label>端口<input v-model.number="userForm.proxyPort" type="number" min="1" max="65535" required /></label><label>用户名<input v-model.trim="userForm.proxyUsername" autocomplete="off" /></label><label>密码<input v-model="userForm.proxyPassword" type="password" autocomplete="new-password" /></label></div>
+        <div v-if="userForm.useProxy" class="form-grid proxy-grid"><label>代理服务器<input v-model.trim="userForm.proxyServer" required /></label><label>端口<input v-model.number="userForm.proxyPort" type="number" min="1" max="65535" required /></label><label>用户名<input v-model.trim="userForm.proxyUsername" required autocomplete="off" /></label><label>密码<input v-model="userForm.proxyPassword" required type="password" autocomplete="new-password" /></label></div>
         <div class="modal-actions"><button type="button" class="button ghost" @click="closeUserModal">取消</button><button class="button primary" :disabled="loading.action || userForm.protocols.length === 0">创建用户</button></div>
+      </form>
+    </div>
+
+    <div v-if="modal.policy" class="modal-backdrop" @mousedown.self="closePolicyModal">
+      <form class="modal-card" @submit.prevent="savePolicy">
+        <div class="modal-heading"><div><p class="eyebrow">用户限制策略</p><h2>{{ policyForm.userId }}</h2></div><button type="button" class="close-button" title="关闭" @click="closePolicyModal"><X :size="17" /></button></div>
+        <div class="form-grid">
+          <label>流量额度（GB）<input v-model.number="policyForm.trafficLimitGb" type="number" min="0" step="0.1" placeholder="留空或 0 表示不限" /></label>
+          <label>最大同时来源 IP 数<input v-model.number="policyForm.maxSourceIps" type="number" min="0" max="1000" step="1" placeholder="留空或 0 表示不限" /></label>
+        </div>
+        <p class="form-note">设备数按代理连接的同时来源 IP 统计；超出额度或来源 IP 上限时，节点会主动关闭对应连接。</p>
+        <div class="modal-actions"><button type="button" class="button ghost" @click="closePolicyModal">取消</button><button class="button primary" :disabled="loading.action">保存限制</button></div>
+      </form>
+    </div>
+
+    <div v-if="modal.exportUsers" class="modal-backdrop" @mousedown.self="closeUserExport">
+      <form class="modal-card export-users-card" @submit.prevent="excelMode === 'export' ? exportNodeUsers() : importNodeUsers()">
+        <div class="modal-heading"><div><p class="eyebrow">节点用户数据</p><h2>Excel 导入 / 导出</h2></div><button type="button" class="close-button" title="关闭" :disabled="excelTransferBusy" @click="closeUserExport"><X :size="17" /></button></div>
+        <div class="excel-mode-switch" role="tablist" aria-label="Excel 操作方式">
+          <button v-if="canViewSensitive" type="button" :class="{ active: excelMode === 'export' }" :disabled="excelTransferBusy" @click="changeExcelMode('export')"><Download :size="15" />导出</button>
+          <button v-if="canProvision" type="button" :class="{ active: excelMode === 'import' }" :disabled="excelTransferBusy" @click="changeExcelMode('import')"><Upload :size="15" />导入</button>
+        </div>
+        <div class="export-node-summary">
+          <FileSpreadsheet :size="20" />
+          <div><span>{{ excelMode === 'export' ? '导出规则' : '导入规则' }}</span><strong>{{ excelMode === 'export' && selectedUserCount ? `导出已勾选的 ${selectedUserCount} 条数据` : `${activeTransferNodeIds.length} 个节点已选择` }}</strong><small>{{ excelMode === 'export' ? (selectedUserCount ? '保留这些用户在当前搜索和排序结果中的原始序号' : '按当前搜索与时间排序合并后计算序号') : '按 Excel 序号筛选，多节点按勾选顺序轮流分配' }}</small></div>
+        </div>
+
+        <fieldset v-if="excelMode === 'import' || selectedUserCount === 0" class="transfer-node-picker">
+          <legend>选择节点</legend>
+          <div class="transfer-node-actions">
+            <button type="button" :disabled="excelTransferBusy" @click="setTransferNodes('current')">当前节点</button>
+            <button type="button" :disabled="excelTransferBusy" @click="setTransferNodes('all')">全选</button>
+            <button type="button" :disabled="excelTransferBusy" @click="setTransferNodes('clear')">清空</button>
+          </div>
+          <div class="transfer-node-list">
+            <label v-for="node in transferNodes" :key="node.id" :class="{ selected: activeTransferNodeIds.includes(node.id) }">
+              <input v-if="excelMode === 'export'" v-model="exportForm.nodeIds" type="checkbox" :value="node.id" :disabled="excelTransferBusy" />
+              <input v-else v-model="importForm.nodeIds" type="checkbox" :value="node.id" :disabled="excelTransferBusy" />
+              <span><strong>{{ node.name }}</strong><small>{{ node.userCount }}/{{ node.maxUsers }} · {{ statusText(node.status) }}</small></span>
+            </label>
+            <p v-if="transferNodes.length === 0" class="transfer-node-empty">{{ excelMode === 'import' ? '当前没有可开通且有容量的节点' : '当前没有已登记节点' }}</p>
+          </div>
+        </fieldset>
+
+        <div v-if="excelMode === 'import' || selectedUserCount === 0" class="sequence-range-fields">
+          <label v-if="excelMode === 'export'">起始序号<input v-model="exportForm.rangeStart" type="number" min="1" step="1" required :disabled="excelTransferBusy" /></label>
+          <label v-else>起始序号<input v-model="importForm.rangeStart" type="number" min="1" step="1" required :disabled="excelTransferBusy" /></label>
+          <span>至</span>
+          <label v-if="excelMode === 'export'">结束序号<input v-model="exportForm.rangeEnd" type="number" min="1" step="1" placeholder="留空到最后" :disabled="excelTransferBusy" /></label>
+          <label v-else>结束序号<input v-model="importForm.rangeEnd" type="number" min="1" step="1" placeholder="留空到最后" :disabled="excelTransferBusy" /></label>
+        </div>
+
+        <label v-if="excelMode === 'export'">使用场景
+          <select v-model="exportForm.scenario" :disabled="excelTransferBusy">
+            <option v-for="scenario in connectionExportScenarios" :key="scenario.key" :value="scenario.key">{{ scenario.label }}</option>
+          </select>
+        </label>
+        <label v-else class="excel-file-field">Excel 文件
+          <input ref="importFileInput" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" :disabled="excelTransferBusy" required @change="handleImportFile" />
+          <small>{{ importForm.fileName || '请选择 .xlsx 文件' }}</small>
+        </label>
+
+        <p v-if="excelMode === 'export'" class="form-note">Excel 包含序号、IP、连接端口、连接账号、连接密码、代理链接、可扫描二维码和创建时间。多节点导出时增加“节点”列；没有所选场景连接的用户仍会保留，连接字段为空。</p>
+        <p v-else class="form-note">导入读取“序号、IP、连接端口、连接账号、连接密码”。建议导入由“指纹浏览器 IP 直连”场景导出的文件；重复的连接账号仍会按原账号作为节点用户 ID，目标节点已有同名用户时该条会失败。</p>
+        <div v-if="exportingUsers" class="export-progress">
+          <div><span>{{ exportProgress.stage }}</span><strong>{{ exportProgress.current }} / {{ exportProgress.total || '...' }}</strong></div>
+          <progress :value="exportProgress.current" :max="exportProgress.total || 1"></progress>
+        </div>
+        <div v-if="importingUsers" class="export-progress">
+          <div><span>正在导入节点用户</span><strong>{{ importProgress.current }} / {{ importProgress.total || '...' }}</strong></div>
+          <progress :value="importProgress.current" :max="importProgress.total || 1"></progress>
+        </div>
+        <div v-if="importResult" class="import-result" :class="{ failed: importResult.failed }">
+          <strong>共 {{ importResult.total }} 条，成功 {{ importResult.succeeded }} 条，失败 {{ importResult.failed }} 条</strong>
+          <small v-for="message in importResult.errors" :key="message">{{ message }}</small>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="button ghost" :disabled="excelTransferBusy" @click="closeUserExport">关闭</button>
+          <button v-if="excelMode === 'export'" class="button primary icon-text" :disabled="excelTransferBusy || exportForm.nodeIds.length === 0"><RefreshCw v-if="exportingUsers" class="spin" :size="15" /><Download v-else :size="15" />{{ exportingUsers ? '正在导出' : '生成 Excel' }}</button>
+          <button v-else class="button primary icon-text" :disabled="excelTransferBusy || importForm.nodeIds.length === 0 || !importForm.file"><RefreshCw v-if="importingUsers" class="spin" :size="15" /><Upload v-else :size="15" />{{ importingUsers ? '正在导入' : '开始导入' }}</button>
+        </div>
       </form>
     </div>
 
@@ -1435,17 +2373,12 @@ onBeforeUnmount(() => {
         <div class="modal-heading"><div><p class="eyebrow">连接信息</p><h2>{{ connectionUser }}</h2></div><button class="close-button" title="关闭" @click="closeConnectionModal"><X :size="17" /></button></div>
         <div v-if="connectionContext" class="connection-context"><span><Server :size="13" />{{ connectionContext.nodeName }} · {{ connectionContext.nodeHost }}</span><span v-if="connectionContext.sourceIp">住宅出口: {{ connectionContext.sourceIp }}</span><span><ShieldCheck :size="13" />{{ connectionContext.proxyBound ? '已绑定上游代理' : 'VPS 直出，未绑定上游代理' }}</span></div>
         <label class="reveal-toggle connection-reveal"><input v-model="revealConnectionSecrets" type="checkbox" /><component :is="revealConnectionSecrets ? EyeOff : Eye" :size="14" /><span>{{ revealConnectionSecrets ? '隐藏完整连接' : '显示完整连接' }}</span></label>
-        <div v-if="connectionData" class="connection-list">
-          <div v-for="link in connectionLinks(connectionData)" :key="`${link.protocol}-${link.value}`" :class="['connection-item', link.key === 'socks5' ? 'recommended' : '']">
-            <div class="connection-label">
-              <span class="protocol-name">{{ link.protocol }}</span>
-              <small class="protocol-hint">{{ protocolHint(link.key) }}</small>
-            </div>
-            <code>{{ revealConnectionSecrets ? link.value : maskedLink(link.value) }}</code>
-            <button :title="`复制 ${link.protocol}`" @click="copy(link.value)"><Copy :size="14" /></button>
-          </div>
-          <p v-if="connectionLinks(connectionData).length === 0" class="empty-state">暂无可用连接</p>
-        </div>
+        <ConnectionLinksPanel
+          v-if="connectionData"
+          :connection="connectionData"
+          :reveal-secrets="revealConnectionSecrets"
+          @copy="copy"
+        />
       </div>
     </div>
 

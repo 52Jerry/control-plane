@@ -9,6 +9,7 @@ import com.example.nodecontrol.domain.ResidentialAllocationRepository;
 import com.example.nodecontrol.dto.ControlPlaneModels.AgentRegistrationRequest;
 import com.example.nodecontrol.dto.ControlPlaneModels.AgentRegistrationResponse;
 import com.example.nodecontrol.dto.ControlPlaneModels.DashboardView;
+import com.example.nodecontrol.dto.ControlPlaneModels.NodeTokenResponse;
 import com.example.nodecontrol.dto.ControlPlaneModels.NodeView;
 import com.example.nodecontrol.dto.ControlPlaneModels.RegisterNodeRequest;
 import com.example.nodecontrol.dto.ControlPlaneModels.UpdateNodeRequest;
@@ -220,6 +221,11 @@ public class ManagedNodeService {
     public ManagedNode getNode(UUID nodeId) {
         return repository.findById(nodeId)
                 .orElseThrow(() -> new NoSuchElementException("节点不存在"));
+    }
+
+    public NodeTokenResponse getNodeToken(UUID nodeId) {
+        ManagedNode node = getNode(nodeId);
+        return new NodeTokenResponse(node.getId(), secretCipher.decrypt(node.getStoredApiToken()));
     }
 
     @Scheduled(fixedDelayString = "${control-plane.heartbeat.interval-ms:15000}")

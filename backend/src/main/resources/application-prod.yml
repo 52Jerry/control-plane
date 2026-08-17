@@ -76,6 +76,9 @@ control-plane:
   geo-ip:
     enabled: ${CONTROL_PLANE_GEOIP_ENABLED:true}
     base-url: ${CONTROL_PLANE_GEOIP_BASE_URL:https://get.geojs.io/v1/ip/geo}
+    fallback-base-url: ${CONTROL_PLANE_GEOIP_FALLBACK_BASE_URL:https://ipwho.is}
+    secondary-fallback-base-url: ${CONTROL_PLANE_GEOIP_SECONDARY_FALLBACK_BASE_URL:http://ip-api.com/json}
     connect-timeout-millis: ${CONTROL_PLANE_GEOIP_CONNECT_TIMEOUT_MILLIS:1500}
     read-timeout-millis: ${CONTROL_PLANE_GEOIP_READ_TIMEOUT_MILLIS:2500}
     cache-ttl-seconds: ${CONTROL_PLANE_GEOIP_CACHE_TTL_SECONDS:86400}
+    failure-cache-ttl-seconds: ${CONTROL_PLANE_GEOIP_FAILURE_CACHE_TTL_SECONDS:120}

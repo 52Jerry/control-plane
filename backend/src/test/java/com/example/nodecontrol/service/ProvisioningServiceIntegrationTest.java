@@ -95,7 +95,8 @@ class ProvisioningServiceIntegrationTest {
                 .thenReturn(successResponse("customer-1"));
 
         ProvisionRequest request = new ProvisionRequest(
-                "customer-1", List.of("vless", "vmess", "socks"), null);
+                "customer-1", List.of("vless", "vmess", "socks"), null,
+                10L * 1024 * 1024 * 1024, 2);
 
         assertThatThrownBy(() -> provisioningService.provision("order-1", request))
                 .isInstanceOf(RemoteNodeException.class);
@@ -105,6 +106,8 @@ class ProvisioningServiceIntegrationTest {
         String remoteKey = retryable.getRemoteIdempotencyKey();
         assertThat(retryable.getState()).isEqualTo("RETRYABLE");
         assertThat(originalNodeId).isEqualTo(node.getId());
+        assertThat(retryable.getTrafficLimitBytes()).isEqualTo(10L * 1024 * 1024 * 1024);
+        assertThat(retryable.getMaxSourceIps()).isEqualTo(2);
 
         var completed = provisioningService.retry(retryable.getId());
 
@@ -120,6 +123,11 @@ class ProvisioningServiceIntegrationTest {
                 org.mockito.ArgumentMatchers.eq(remoteKey));
         assertDirectRequest(requestCaptor.getAllValues().getFirst());
         assertDirectRequest(requestCaptor.getAllValues().getLast());
+        assertThat(requestCaptor.getAllValues())
+                .allSatisfy(remoteRequest -> {
+                    assertThat(remoteRequest.trafficLimitBytes()).isEqualTo(10L * 1024 * 1024 * 1024);
+                    assertThat(remoteRequest.maxSourceIps()).isEqualTo(2);
+                });
     }
 
     @Test
@@ -200,6 +208,52 @@ class ProvisioningServiceIntegrationTest {
     }
 
     @Test
+    void allocationListFiltersByIpAndOnlyReturnsCredentialsWhenAllowed() {
+        saveOnlineNode("node-ip-search", 10);
+        when(ipCountryResolver.resolve("198.51.100.77"))
+                .thenReturn(new IpCountryResolver.CountryInfo("美国", "US"));
+        when(nodeManagerClient.createUser(any(), any(), any())).thenAnswer(invocation ->
+                residentialSuccessResponse(invocation.<CreateUserRequest>getArgument(1).userId()));
+
+        provisioningService.provisionProxyBatch(
+                "batch-ip-search",
+                new ProxyProvisionRequest(
+                        "198.51.100.77 edge.example 1080 search-user upstream-password",
+                        List.of("socks"), null, "ip-search"));
+
+        AllocationView hidden = provisioningService.listAllocations("198.51.100.77", false).getFirst();
+        assertThat(hidden.access().ip()).isEqualTo("198.51.100.77");
+        assertThat(hidden.access().port()).isEqualTo(1080);
+        assertThat(hidden.access().countryName()).isEqualTo("美国");
+        assertThat(hidden.access().username()).isNull();
+        assertThat(hidden.access().password()).isNull();
+
+        AllocationView visible = provisioningService.listAllocations("198.51.100.77", true).getFirst();
+        assertThat(visible.access().username()).isEqualTo("search-user");
+        assertThat(visible.access().password()).isEqualTo("upstream-password");
+        assertThat(provisioningService.listAllocations("192.0.2.200", true)).isEmpty();
+    }
+
+    @Test
+    void onlyPendingRetryableAndFailedAllocationsCanBeDeleted() {
+        ResidentialAllocation pending = allocationRepository.saveAndFlush(new ResidentialAllocation(
+                "delete-pending", "hash", "pending-user", "remote-pending", "socks"));
+
+        provisioningService.deleteAllocation(pending.getId());
+        assertThat(allocationRepository.findById(pending.getId())).isEmpty();
+
+        saveOnlineNode("node-delete-active", 10);
+        when(nodeManagerClient.createUser(any(), any(), any())).thenReturn(successResponse("active-user"));
+        AllocationView active = provisioningService.provision(
+                "delete-active", new ProvisionRequest("active-user", List.of("socks"), null));
+
+        assertThatThrownBy(() -> provisioningService.deleteAllocation(active.id()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("待分配、待重试或失败");
+        assertThat(allocationRepository.findById(active.id())).isPresent();
+    }
+
+    @Test
     void persistsFiveProtocolLinksEncryptedAndOnlyReturnsThemForDetailViews() {
         saveOnlineNode("node-protocols-all", 10);
         Map<String, String> protocolsAll = Map.of(
@@ -277,6 +331,8 @@ class ProvisioningServiceIntegrationTest {
         assertThat(requestCaptor.getAllValues().get(0).proxy().port()).isEqualTo(1080);
         assertThat(requestCaptor.getAllValues().get(0).proxy().username()).isEqualTo("user-a");
         assertThat(requestCaptor.getAllValues().get(0).proxy().password()).isEqualTo("secret-a");
+        assertThat(requestCaptor.getAllValues().get(0).socksUsername()).isEqualTo("user-a");
+        assertThat(requestCaptor.getAllValues().get(0).socksPassword()).isEqualTo("secret-a");
         assertThat(requestCaptor.getAllValues().get(0).userId()).isEqualTo("user-a");
         assertThat(requestCaptor.getAllValues().get(0).protocols())
                 .containsExactly("vless", "vmess", "socks");
@@ -322,6 +378,8 @@ class ProvisioningServiceIntegrationTest {
         assertThat(request.proxy().port()).isEqualTo(5001);
         assertThat(request.proxy().username()).isEqualTo("direct-user");
         assertThat(request.proxy().password()).isEqualTo("direct-password");
+        assertThat(request.socksUsername()).isEqualTo("direct-user");
+        assertThat(request.socksPassword()).isEqualTo("direct-password");
     }
 
     @Test

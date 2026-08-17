@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class IpCountryResolver {
 
-    public static final CountryInfo UNKNOWN = new CountryInfo("未知", "ZZ");
+    public static final CountryInfo UNKNOWN = new CountryInfo("未知", "ZZ", null);
 
     private final RestClient restClient;
     private final ControlPlaneProperties properties;
@@ -58,47 +58,120 @@ public class IpCountryResolver {
         }
 
         CountryInfo resolved = fetch(normalizedIp);
-        long ttlSeconds = Math.max(60, properties.getGeoIp().getCacheTtlSeconds());
-        cache.put(normalizedIp, new CacheEntry(resolved, Instant.now().plus(Duration.ofSeconds(ttlSeconds))));
+        long ttlSeconds = isUnknown(resolved)
+                ? Math.max(0, properties.getGeoIp().getFailureCacheTtlSeconds())
+                : Math.max(60, properties.getGeoIp().getCacheTtlSeconds());
+        if (ttlSeconds > 0) {
+            cache.put(normalizedIp, new CacheEntry(
+                    resolved, Instant.now().plus(Duration.ofSeconds(ttlSeconds))));
+        }
         return resolved;
     }
 
     private CountryInfo fetch(String ip) {
+        CountryInfo primary = fetchGeoJs(ip);
+        if (!isUnknown(primary)) {
+            return primary;
+        }
+        CountryInfo fallback = fetchFallback(ip);
+        return isUnknown(fallback) ? fetchSecondaryFallback(ip) : fallback;
+    }
+
+    private CountryInfo fetchGeoJs(String ip) {
         try {
             GeoJsResponse response = restClient.get()
                     .uri("/{ip}.json", ip)
                     .retrieve()
                     .body(GeoJsResponse.class);
-            if (response == null || response.countryCode() == null) {
+            return countryInfo(response == null ? null : response.country(),
+                    response == null ? null : response.countryCode(),
+                    response == null ? null : response.city());
+        } catch (RestClientException | IllegalArgumentException ignored) {
+            return UNKNOWN;
+        }
+    }
+
+    private CountryInfo fetchFallback(String ip) {
+        String fallbackBaseUrl = normalizeOptionalBaseUrl(
+                properties.getGeoIp().getFallbackBaseUrl());
+        if (fallbackBaseUrl.isBlank()) {
+            return UNKNOWN;
+        }
+        try {
+            IpWhoResponse response = restClient.get()
+                    .uri(fallbackBaseUrl + "/{ip}", ip)
+                    .retrieve()
+                    .body(IpWhoResponse.class);
+            if (response == null || Boolean.FALSE.equals(response.success())) {
                 return UNKNOWN;
             }
-            String code = response.countryCode().trim().toUpperCase(Locale.ROOT);
-            if (!code.matches("^[A-Z]{2}$")) {
-                return UNKNOWN;
-            }
-            String localizedName = Locale.of("", code).getDisplayCountry(Locale.SIMPLIFIED_CHINESE);
-            if (localizedName == null || localizedName.isBlank() || localizedName.equalsIgnoreCase(code)) {
-                localizedName = response.country();
-            }
-            if (localizedName == null || localizedName.isBlank()) {
-                localizedName = "未知";
-            }
-            return new CountryInfo(localizedName, code);
+            return countryInfo(response.country(), response.countryCode(), response.city());
         } catch (RestClientException | IllegalArgumentException ignored) {
             // GeoIP is optional enrichment. A lookup outage must not block node provisioning.
             return UNKNOWN;
         }
     }
 
+    private CountryInfo fetchSecondaryFallback(String ip) {
+        String fallbackBaseUrl = normalizeOptionalBaseUrl(
+                properties.getGeoIp().getSecondaryFallbackBaseUrl());
+        if (fallbackBaseUrl.isBlank()) {
+            return UNKNOWN;
+        }
+        try {
+            IpApiResponse response = restClient.get()
+                    .uri(fallbackBaseUrl + "/{ip}?fields=status,country,countryCode,city", ip)
+                    .retrieve()
+                    .body(IpApiResponse.class);
+            if (response == null || !"success".equalsIgnoreCase(response.status())) {
+                return UNKNOWN;
+            }
+            return countryInfo(response.country(), response.countryCode(), response.city());
+        } catch (RestClientException | IllegalArgumentException ignored) {
+            return UNKNOWN;
+        }
+    }
+
+    private CountryInfo countryInfo(String providerName, String providerCode, String city) {
+        if (providerCode == null) {
+            return UNKNOWN;
+        }
+        String code = providerCode.trim().toUpperCase(Locale.ROOT);
+        if (!code.matches("^[A-Z]{2}$") || "XX".equals(code) || "ZZ".equals(code)) {
+            return UNKNOWN;
+        }
+        String localizedName = Locale.of("", code).getDisplayCountry(Locale.SIMPLIFIED_CHINESE);
+        if (localizedName == null || localizedName.isBlank() || localizedName.equalsIgnoreCase(code)) {
+            localizedName = providerName;
+        }
+        if (localizedName == null || localizedName.isBlank()) {
+            return UNKNOWN;
+        }
+        String normalizedCity = city == null || city.isBlank() ? null : city.trim();
+        return new CountryInfo(localizedName.trim(), code, normalizedCity);
+    }
+
+    private boolean isUnknown(CountryInfo country) {
+        return country == null || "ZZ".equals(country.code());
+    }
+
     private static String normalizeBaseUrl(String value) {
+        String normalized = normalizeOptionalBaseUrl(value);
+        return normalized.isBlank() ? "https://get.geojs.io/v1/ip/geo" : normalized;
+    }
+
+    private static String normalizeOptionalBaseUrl(String value) {
         String normalized = value == null ? "" : value.trim();
         while (normalized.endsWith("/")) {
             normalized = normalized.substring(0, normalized.length() - 1);
         }
-        return normalized.isBlank() ? "https://get.geojs.io/v1/ip/geo" : normalized;
+        return normalized;
     }
 
-    public record CountryInfo(String name, String code) {
+    public record CountryInfo(String name, String code, String city) {
+        public CountryInfo(String name, String code) {
+            this(name, code, null);
+        }
     }
 
     private record CacheEntry(CountryInfo country, Instant expiresAt) {
@@ -106,7 +179,24 @@ public class IpCountryResolver {
 
     private record GeoJsResponse(
             String country,
-            @JsonProperty("country_code") String countryCode
+            @JsonProperty("country_code") String countryCode,
+            String city
+    ) {
+    }
+
+    private record IpWhoResponse(
+            Boolean success,
+            String country,
+            @JsonProperty("country_code") String countryCode,
+            String city
+    ) {
+    }
+
+    private record IpApiResponse(
+            String status,
+            String country,
+            String countryCode,
+            String city
     ) {
     }
 }

@@ -244,9 +244,12 @@ public class ControlPlaneProperties {
     public static class GeoIp {
         private boolean enabled = true;
         private String baseUrl = "https://get.geojs.io/v1/ip/geo";
+        private String fallbackBaseUrl = "https://ipwho.is";
+        private String secondaryFallbackBaseUrl = "http://ip-api.com/json";
         private int connectTimeoutMillis = 1500;
         private int readTimeoutMillis = 2500;
         private long cacheTtlSeconds = 86400;
+        private long failureCacheTtlSeconds = 120;
 
         public boolean isEnabled() {
             return enabled;
@@ -262,6 +265,22 @@ public class ControlPlaneProperties {
 
         public void setBaseUrl(String baseUrl) {
             this.baseUrl = baseUrl;
+        }
+
+        public String getFallbackBaseUrl() {
+            return fallbackBaseUrl;
+        }
+
+        public void setFallbackBaseUrl(String fallbackBaseUrl) {
+            this.fallbackBaseUrl = fallbackBaseUrl;
+        }
+
+        public String getSecondaryFallbackBaseUrl() {
+            return secondaryFallbackBaseUrl;
+        }
+
+        public void setSecondaryFallbackBaseUrl(String secondaryFallbackBaseUrl) {
+            this.secondaryFallbackBaseUrl = secondaryFallbackBaseUrl;
         }
 
         public int getConnectTimeoutMillis() {
@@ -286,6 +305,14 @@ public class ControlPlaneProperties {
 
         public void setCacheTtlSeconds(long cacheTtlSeconds) {
             this.cacheTtlSeconds = cacheTtlSeconds;
+        }
+
+        public long getFailureCacheTtlSeconds() {
+            return failureCacheTtlSeconds;
+        }
+
+        public void setFailureCacheTtlSeconds(long failureCacheTtlSeconds) {
+            this.failureCacheTtlSeconds = failureCacheTtlSeconds;
         }
     }
 

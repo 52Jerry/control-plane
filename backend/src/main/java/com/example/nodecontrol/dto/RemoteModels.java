@@ -90,12 +90,59 @@ public final class RemoteModels {
             long upload,
             long download,
             long total,
+            Long trafficLimitBytes,
+            Integer maxSourceIps,
+            List<String> activeSourceIps,
             String status,
-            Instant createdAt
+            Instant createdAt,
+            NodeAccessInfo access
     ) {
+        public UserSummary(String userId,
+                           List<String> protocols,
+                           String socksUsername,
+                           boolean proxyBound,
+                           String proxyServer,
+                           long upload,
+                           long download,
+                           long total,
+                           String status,
+                           Instant createdAt) {
+            this(userId, protocols, socksUsername, proxyBound, proxyServer,
+                    upload, download, total, null, null, List.of(), status, createdAt, null);
+        }
+
+        public UserSummary(String userId,
+                           List<String> protocols,
+                           String socksUsername,
+                           boolean proxyBound,
+                           String proxyServer,
+                           long upload,
+                           long download,
+                           long total,
+                           String status,
+                           Instant createdAt,
+                           NodeAccessInfo access) {
+            this(userId, protocols, socksUsername, proxyBound, proxyServer,
+                    upload, download, total, null, null, List.of(), status, createdAt, access);
+        }
+
+        public UserSummary {
+            activeSourceIps = activeSourceIps == null ? List.of() : List.copyOf(activeSourceIps);
+        }
     }
 
     public record UserPage(List<UserSummary> items, int page, int pageSize, long total) {
+    }
+
+    public record NodeAccessInfo(
+            String ip,
+            Integer port,
+            String username,
+            String password,
+            String countryCode,
+            String countryName,
+            String cityName
+    ) {
     }
 
     public record SocksConnection(String host, int port, String username, String password) {
@@ -203,7 +250,32 @@ public final class RemoteModels {
             List<@Pattern(regexp = "vless|vmess|socks", message = "协议只支持 VLESS、VMess 或 SOCKS") String> protocols,
             @Size(max = 255, message = "SOCKS 用户名不能超过 255 个字符") String socksUsername,
             @Size(max = 255, message = "SOCKS 密码不能超过 255 个字符") String socksPassword,
-            @Valid ProxyConfig proxy
+            @Valid ProxyConfig proxy,
+            @Min(value = 0, message = "流量额度不能小于 0") Long trafficLimitBytes,
+            @Min(value = 0, message = "最大来源 IP 数不能小于 0")
+            @Max(value = 1000, message = "最大来源 IP 数不能超过 1000") Integer maxSourceIps
+    ) {
+        public CreateUserRequest(String userId,
+                                 List<String> protocols,
+                                 String socksUsername,
+                                 String socksPassword,
+                                 ProxyConfig proxy) {
+            this(userId, protocols, socksUsername, socksPassword, proxy, null, null);
+        }
+    }
+
+    public record UpdateUserPolicyRequest(
+            @Min(value = 0, message = "流量额度不能小于 0") Long trafficLimitBytes,
+            @Min(value = 0, message = "最大来源 IP 数不能小于 0")
+            @Max(value = 1000, message = "最大来源 IP 数不能超过 1000") Integer maxSourceIps
+    ) {
+    }
+
+    public record UserPolicyResponse(
+            boolean success,
+            String userId,
+            Long trafficLimitBytes,
+            Integer maxSourceIps
     ) {
     }
 
@@ -260,6 +332,16 @@ public final class RemoteModels {
     ) {
     }
 
+    public record ProxyMetadataUpdateRequest(
+            @Size(max = 255) String sourceIp,
+            @Size(max = 255) String sourceAddress,
+            @Min(value = 1) @Max(value = 65535) Integer sourcePort,
+            @Size(max = 8) String countryCode,
+            @Size(max = 255) String countryName,
+            @Size(max = 255) String cityName
+    ) {
+    }
+
     public record OperationResponse(boolean success, String userId, String message) {
     }
 
@@ -270,8 +352,27 @@ public final class RemoteModels {
             long total,
             boolean available,
             String source,
-            Instant collectedAt
+            Instant collectedAt,
+            Long trafficLimitBytes,
+            Integer maxSourceIps,
+            List<String> activeSourceIps,
+            String status
     ) {
+        public TrafficResponse(String userId,
+                               long upload,
+                               long download,
+                               long total,
+                               boolean available,
+                               String source,
+                               Instant collectedAt) {
+            this(userId, upload, download, total, available, source, collectedAt,
+                    null, null, List.of(), "active");
+        }
+
+        public TrafficResponse {
+            activeSourceIps = activeSourceIps == null ? List.of() : List.copyOf(activeSourceIps);
+            status = status == null || status.isBlank() ? "active" : status;
+        }
     }
 
     public record ReloadResponse(boolean success) {

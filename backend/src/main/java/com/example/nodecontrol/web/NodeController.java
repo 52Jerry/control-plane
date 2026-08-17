@@ -1,6 +1,7 @@
 package com.example.nodecontrol.web;
 
 import com.example.nodecontrol.dto.ControlPlaneModels.DashboardView;
+import com.example.nodecontrol.dto.ControlPlaneModels.NodeTokenResponse;
 import com.example.nodecontrol.dto.ControlPlaneModels.NodeView;
 import com.example.nodecontrol.dto.ControlPlaneModels.RegisterNodeRequest;
 import com.example.nodecontrol.dto.ControlPlaneModels.UpdateNodeRequest;
@@ -10,7 +11,9 @@ import com.example.nodecontrol.service.NodeUserService;
 import com.example.nodecontrol.security.ControlSessionService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -46,6 +49,11 @@ public class NodeController {
     @GetMapping("/nodes")
     public List<NodeView> nodes() {
         return nodeService.listNodes();
+    }
+
+    @GetMapping("/nodes/{nodeId}/token")
+    public ResponseEntity<NodeTokenResponse> token(@PathVariable UUID nodeId) {
+        return noStore(nodeService.getNodeToken(nodeId));
     }
 
     @PostMapping("/nodes")
@@ -89,6 +97,12 @@ public class NodeController {
 
     private UUID actor(HttpServletRequest request) {
         return sessionService.authenticatedSession(request).map(ControlSessionService.AuthenticatedSession::userId).orElse(null);
+    }
+
+    private <T> ResponseEntity<T> noStore(T body) {
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(body);
     }
 }
 

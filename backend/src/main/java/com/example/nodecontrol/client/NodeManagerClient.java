@@ -8,10 +8,13 @@ import com.example.nodecontrol.dto.RemoteModels.CreateUserRequest;
 import com.example.nodecontrol.dto.RemoteModels.CreateUserResponse;
 import com.example.nodecontrol.dto.RemoteModels.OperationResponse;
 import com.example.nodecontrol.dto.RemoteModels.ProxyDetails;
+import com.example.nodecontrol.dto.RemoteModels.ProxyMetadataUpdateRequest;
 import com.example.nodecontrol.dto.RemoteModels.ReloadResponse;
 import com.example.nodecontrol.dto.RemoteModels.TrafficResponse;
+import com.example.nodecontrol.dto.RemoteModels.UpdateUserPolicyRequest;
 import com.example.nodecontrol.dto.RemoteModels.UserConnection;
 import com.example.nodecontrol.dto.RemoteModels.UserPage;
+import com.example.nodecontrol.dto.RemoteModels.UserPolicyResponse;
 import com.example.nodecontrol.security.SecretCipher;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -116,6 +119,17 @@ public class NodeManagerClient {
                 .body(TrafficResponse.class));
     }
 
+    public UserPolicyResponse updateUserPolicy(ManagedNode node,
+                                               String userId,
+                                               UpdateUserPolicyRequest request) {
+        return execute(() -> client(node).patch()
+                .uri("/api/user/{userId}/policy", userId)
+                .body(request)
+                .retrieve()
+                .onStatus(HttpStatusCode::isError, this::handleError)
+                .body(UserPolicyResponse.class));
+    }
+
     public ProxyDetails getProxy(ManagedNode node, String userId) {
         return execute(() -> client(node).get()
                 .uri("/api/user/{userId}/proxy", userId)
@@ -128,6 +142,17 @@ public class NodeManagerClient {
         return execute(() -> client(node).post()
                 .uri("/api/user/bind-proxy")
                 .header("Idempotency-Key", idempotencyKey)
+                .body(request)
+                .retrieve()
+                .onStatus(HttpStatusCode::isError, this::handleError)
+                .body(OperationResponse.class));
+    }
+
+    public OperationResponse updateProxyMetadata(ManagedNode node,
+                                                 String userId,
+                                                 ProxyMetadataUpdateRequest request) {
+        return execute(() -> client(node).patch()
+                .uri("/api/user/{userId}/proxy-metadata", userId)
                 .body(request)
                 .retrieve()
                 .onStatus(HttpStatusCode::isError, this::handleError)

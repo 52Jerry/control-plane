@@ -45,6 +45,10 @@ public class ResidentialAllocation {
     @Column(nullable = false, length = 255)
     private String protocols;
 
+    private Long trafficLimitBytes;
+
+    private Integer maxSourceIps;
+
     @Column(nullable = false, length = 32)
     private String state;
 
@@ -188,6 +192,19 @@ public class ResidentialAllocation {
         this.lastError = null;
     }
 
+    public void setUserPolicy(Long trafficLimitBytes, Integer maxSourceIps) {
+        this.trafficLimitBytes = normalizePolicyValue(trafficLimitBytes);
+        this.maxSourceIps = normalizePolicyValue(maxSourceIps);
+    }
+
+    private Long normalizePolicyValue(Long value) {
+        return value == null || value <= 0 ? null : value;
+    }
+
+    private Integer normalizePolicyValue(Integer value) {
+        return value == null || value <= 0 ? null : value;
+    }
+
     public void complete(CreateUserResponse response,
                          String encryptedVless,
                          String encryptedVmess,
@@ -262,6 +279,14 @@ public class ResidentialAllocation {
 
     public String getProtocols() {
         return protocols;
+    }
+
+    public Long getTrafficLimitBytes() {
+        return trafficLimitBytes;
+    }
+
+    public Integer getMaxSourceIps() {
+        return maxSourceIps;
     }
 
     public String getState() {

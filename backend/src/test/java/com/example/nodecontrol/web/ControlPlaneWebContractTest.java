@@ -2,17 +2,27 @@ package com.example.nodecontrol.web;
 
 import com.example.nodecontrol.dto.ControlPlaneModels.AgentRegistrationResponse;
 import com.example.nodecontrol.dto.ControlPlaneModels.AllocationView;
+import com.example.nodecontrol.dto.ControlPlaneModels.NodeTokenResponse;
+import com.example.nodecontrol.dto.ControlPlaneModels.NodeView;
 import com.example.nodecontrol.dto.ControlPlaneModels.ProxyProvisionBatchResponse;
+import com.example.nodecontrol.dto.ControlPlaneModels.BatchConnectionResult;
+import com.example.nodecontrol.dto.RemoteModels.OperationResponse;
 import com.example.nodecontrol.dto.RemoteModels.SocksConnection;
+import com.example.nodecontrol.dto.RemoteModels.UpdateUserPolicyRequest;
 import com.example.nodecontrol.dto.RemoteModels.UserConnection;
+import com.example.nodecontrol.dto.RemoteModels.UserPage;
+import com.example.nodecontrol.dto.RemoteModels.UserPolicyResponse;
+import com.example.nodecontrol.dto.RemoteModels.UserSummary;
 import com.example.nodecontrol.domain.NodeInstallToken;
 import com.example.nodecontrol.domain.NodeInstallTokenRepository;
 import com.example.nodecontrol.security.ControlSessionService;
 import com.example.nodecontrol.service.ManagedNodeService;
 import com.example.nodecontrol.service.NodeInstallationService;
+import com.example.nodecontrol.service.NodeUserService;
 import com.example.nodecontrol.service.ProvisioningService;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -64,6 +74,9 @@ class ControlPlaneWebContractTest {
 
     @MockitoBean
     private ProvisioningService provisioningService;
+
+    @MockitoBean
+    private NodeUserService nodeUserService;
 
     @Autowired
     private NodeInstallTokenRepository installTokenRepository;
@@ -211,7 +224,7 @@ class ControlPlaneWebContractTest {
         AllocationView allocation = new AllocationView(
                 UUID.randomUUID(), "request-1", "customer-1", List.of("socks"), "PENDING",
                 null, null, null, null, null, Instant.now(), Instant.now(), null);
-        when(provisioningService.listAllocations()).thenReturn(List.of(allocation));
+        when(provisioningService.listAllocations(null, true)).thenReturn(List.of(allocation));
         mockMvc.perform(get("/api/control/allocations")
                         .header("X-Control-Token", "admin-secret"))
                 .andExpect(status().isOk())
@@ -224,7 +237,7 @@ class ControlPlaneWebContractTest {
         AllocationView allocation = new AllocationView(
                 UUID.randomUUID(), "request-page", "page-user", List.of("socks"), "PENDING",
                 null, null, null, null, null, Instant.now(), Instant.now(), null);
-        when(provisioningService.listAllocations(1, 20))
+        when(provisioningService.listAllocations(1, 20, null, true))
                 .thenReturn(new com.example.nodecontrol.dto.ControlPlaneModels.AllocationPageResponse(
                         List.of(allocation), 1, 20, 1, 1));
 
@@ -242,6 +255,112 @@ class ControlPlaneWebContractTest {
     }
 
     @Test
+    void nodeUserListForwardsIpSearchAndSortAndIsNotCached() throws Exception {
+        UUID nodeId = UUID.randomUUID();
+        when(nodeUserService.listUsers(nodeId, 1, 20, null, "198.51.100", "createdAsc", true))
+                .thenReturn(new UserPage(List.of(), 1, 20, 0));
+
+        mockMvc.perform(get("/api/control/nodes/{nodeId}/users", nodeId)
+                        .param("ip", "198.51.100")
+                        .param("sort", "createdAsc")
+                        .header("X-Control-Token", "admin-secret"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.total").value(0));
+
+        verify(nodeUserService).listUsers(
+                nodeId, 1, 20, null, "198.51.100", "createdAsc", true);
+    }
+
+    @Test
+    void nodeUserRefreshBypassesTheServiceSnapshot() throws Exception {
+        UUID nodeId = UUID.randomUUID();
+        when(nodeUserService.listUsers(
+                nodeId, 2, 20, null, null, "createdDesc", true, true))
+                .thenReturn(new UserPage(List.of(), 2, 20, 0));
+
+        mockMvc.perform(get("/api/control/nodes/{nodeId}/users", nodeId)
+                        .param("page", "2")
+                        .param("refresh", "true")
+                        .header("X-Control-Token", "admin-secret"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.page").value(2));
+
+        verify(nodeUserService).listUsers(
+                nodeId, 2, 20, null, null, "createdDesc", true, true);
+    }
+
+    @Test
+    void nodeUserPolicyPatchForwardsLimitsAndIsNotCached() throws Exception {
+        UUID nodeId = UUID.randomUUID();
+        when(nodeUserService.updatePolicy(any(), any(), any(), any()))
+                .thenReturn(new UserPolicyResponse(true, "user-1", 10737418240L, 2));
+
+        mockMvc.perform(patch("/api/control/nodes/{nodeId}/users/{userId}/policy", nodeId, "user-1")
+                        .header("X-Control-Token", "admin-secret")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"trafficLimitBytes\":10737418240,\"maxSourceIps\":2}"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.userId").value("user-1"))
+                .andExpect(jsonPath("$.trafficLimitBytes").value(10737418240L))
+                .andExpect(jsonPath("$.maxSourceIps").value(2));
+
+        ArgumentCaptor<UpdateUserPolicyRequest> requestCaptor =
+                ArgumentCaptor.forClass(UpdateUserPolicyRequest.class);
+        verify(nodeUserService).updatePolicy(
+                org.mockito.ArgumentMatchers.eq(nodeId),
+                org.mockito.ArgumentMatchers.eq("user-1"),
+                requestCaptor.capture(),
+                org.mockito.ArgumentMatchers.isNull());
+        assertThat(requestCaptor.getValue().trafficLimitBytes()).isEqualTo(10737418240L);
+        assertThat(requestCaptor.getValue().maxSourceIps()).isEqualTo(2);
+    }
+
+    @Test
+    void nodeUserExportReturnsOneCompleteListWithoutCaching() throws Exception {
+        UUID nodeId = UUID.randomUUID();
+        UserSummary user = new UserSummary(
+                "user-1", List.of("socks"), "access-user", false, null,
+                0, 0, 0, "active", Instant.now());
+        when(nodeUserService.listUsersForExport(
+                nodeId, "user", null, "createdDesc", true))
+                .thenReturn(List.of(user));
+
+        mockMvc.perform(get("/api/control/nodes/{nodeId}/users/export", nodeId)
+                        .param("keyword", "user")
+                        .header("X-Control-Token", "admin-secret"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$[0].userId").value("user-1"));
+
+        verify(nodeUserService).listUsersForExport(
+                nodeId, "user", null, "createdDesc", true);
+    }
+
+    @Test
+    void batchConnectionsReturnSecretsWithoutCaching() throws Exception {
+        UUID nodeId = UUID.randomUUID();
+        UserConnection connection = new UserConnection(
+                true, "user-1", UUID.randomUUID().toString(), List.of("socks"), null, null,
+                new SocksConnection("203.0.113.20", 5001, "access-user", "access-password"),
+                false, Instant.now());
+        when(nodeUserService.getConnectionsBatch(nodeId, List.of("user-1")))
+                .thenReturn(List.of(new BatchConnectionResult("user-1", connection, null)));
+
+        mockMvc.perform(post("/api/control/nodes/{nodeId}/users/connections/batch", nodeId)
+                        .header("X-Control-Token", "admin-secret")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"userIds\":[\"user-1\"]}"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$[0].userId").value("user-1"))
+                .andExpect(jsonPath("$[0].connection.socks.password").value("access-password"));
+    }
+
+    @Test
     void connectionSecretsAreOnlyReturnedBySingleAllocationEndpoint() throws Exception {
         UUID id = UUID.randomUUID();
         UserConnection connection = new UserConnection(
@@ -256,7 +375,7 @@ class ControlPlaneWebContractTest {
                 summary.id(), summary.requestKey(), summary.userId(), summary.protocols(), summary.state(),
                 summary.nodeId(), summary.nodeName(), summary.nodeHost(), connection, null,
                 summary.createdAt(), summary.updatedAt(), summary.completedAt());
-        when(provisioningService.listAllocations()).thenReturn(List.of(summary));
+        when(provisioningService.listAllocations(null, true)).thenReturn(List.of(summary));
         when(provisioningService.getAllocation(id)).thenReturn(detail);
 
         mockMvc.perform(get("/api/control/allocations")
@@ -417,6 +536,47 @@ class ControlPlaneWebContractTest {
     }
 
     @Test
+    void nodeTokenIsAvailableOnlyToAdminAndNodeOpsAndIsNotCached() throws Exception {
+        UUID nodeId = UUID.randomUUID();
+        when(managedNodeService.getNodeToken(nodeId))
+                .thenReturn(new NodeTokenResponse(nodeId, "node-secret-token"));
+
+        mockMvc.perform(get("/api/control/nodes/{nodeId}/token", nodeId)
+                        .header("X-Control-Token", "admin-secret"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.nodeId").value(nodeId.toString()))
+                .andExpect(jsonPath("$.token").value("node-secret-token"));
+
+        Cookie nodeOps = createRoleAccount("NODE_OPS");
+        mockMvc.perform(get("/api/control/nodes/{nodeId}/token", nodeId).cookie(nodeOps))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.token").value("node-secret-token"));
+
+        Cookie provisioner = createRoleAccount("PROVISIONER");
+        mockMvc.perform(get("/api/control/nodes/{nodeId}/token", nodeId).cookie(provisioner))
+                .andExpect(status().isForbidden());
+
+        Cookie readonly = createRoleAccount("READONLY");
+        mockMvc.perform(get("/api/control/nodes/{nodeId}/token", nodeId).cookie(readonly))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void ordinaryNodeListDoesNotExposeTokenField() throws Exception {
+        UUID nodeId = UUID.randomUUID();
+        when(managedNodeService.listNodes()).thenReturn(List.of(nodeView(nodeId)));
+
+        mockMvc.perform(get("/api/control/nodes")
+                        .header("X-Control-Token", "admin-secret"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].id").value(nodeId.toString()))
+                .andExpect(jsonPath("$[0].token").doesNotExist())
+                .andExpect(jsonPath("$[0].storedApiToken").doesNotExist());
+    }
+
+    @Test
     void readonlyCannotWriteNodesOrReadConnectionSecrets() throws Exception {
         Cookie readonly = createRoleAccount("READONLY");
         mockMvc.perform(get("/api/control/nodes").cookie(readonly))
@@ -430,6 +590,14 @@ class ControlPlaneWebContractTest {
                 .andExpect(status().isForbidden());
         mockMvc.perform(get("/api/control/nodes/{nodeId}/users/{userId}/proxy",
                         UUID.randomUUID(), "user-1").cookie(readonly))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/control/nodes/{nodeId}/users/export", UUID.randomUUID())
+                        .cookie(readonly))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post("/api/control/nodes/{nodeId}/users/connections/batch", UUID.randomUUID())
+                        .cookie(readonly)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"userIds\":[\"user-1\"]}"))
                 .andExpect(status().isForbidden());
     }
 
@@ -457,18 +625,27 @@ class ControlPlaneWebContractTest {
     }
 
     @Test
-    void nodeOpsMayIssueInstallCommandButCannotCreateNodeUser() throws Exception {
+    void nodeOpsMayIssueInstallCommandAndDeleteButCannotCreateNodeUser() throws Exception {
         Cookie nodeOps = createRoleAccount("NODE_OPS");
+        UUID nodeId = UUID.randomUUID();
         mockMvc.perform(post("/api/control/node-installation").cookie(nodeOps))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.command").exists());
-        mockMvc.perform(post("/api/control/nodes/{nodeId}/users", UUID.randomUUID())
+        mockMvc.perform(post("/api/control/nodes/{nodeId}/users", nodeId)
                         .cookie(nodeOps)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"userId":"node-user","protocols":["socks"]}
                                 """))
                 .andExpect(status().isForbidden());
+
+        when(nodeUserService.deleteUser(any(), any(), any(), any()))
+                .thenReturn(new OperationResponse(true, "node-user", "deleted"));
+        mockMvc.perform(delete("/api/control/nodes/{nodeId}/users/{userId}", nodeId, "node-user")
+                        .cookie(nodeOps)
+                        .header("Idempotency-Key", "node-ops-delete"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
     }
 
     @Test
@@ -502,6 +679,15 @@ class ControlPlaneWebContractTest {
                   "maxUsers":500
                 }
                 """.formatted(nodeId);
+    }
+
+    private NodeView nodeView(UUID nodeId) {
+        return new NodeView(
+                nodeId, "Node A", "http://203.0.113.10:8088", "node-a", "online",
+                "203.0.113.10", "1.4.1", "1.13.14", "running", true,
+                1.0, 2.0, 3, 4, 5, 1080,
+                10, 20, 30, Instant.now(), Instant.now(), Instant.now(), null,
+                0, true, false, 500, Instant.now());
     }
 
     private Cookie loginCookie(String username, String password) throws Exception {

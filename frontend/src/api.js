@@ -53,19 +53,27 @@ export const api = {
   auditLogs: (params = {}) => request(`/api/control/audit-logs?${queryString(params)}`),
   dashboard: () => request('/api/control/dashboard'),
   nodes: () => request('/api/control/nodes'),
+  nodeToken: (nodeId) => request(`/api/control/nodes/${nodeId}/token`),
   createNodeInstallCommand: () => request('/api/control/node-installation', { method: 'POST' }),
   registerNode: (payload) => request('/api/control/nodes', { method: 'POST', body: JSON.stringify(payload) }),
   updateNode: (nodeId, payload) => request(`/api/control/nodes/${nodeId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   refreshNode: (nodeId) => request(`/api/control/nodes/${nodeId}/refresh`, { method: 'POST' }),
   reloadNode: (nodeId) => request(`/api/control/nodes/${nodeId}/reload`, { method: 'POST' }),
   deleteNode: (nodeId) => request(`/api/control/nodes/${nodeId}`, { method: 'DELETE' }),
-  users: (nodeId, params) => request(`/api/control/nodes/${nodeId}/users?${queryString(params)}`),
+  users: (nodeId, params, options = {}) => request(`/api/control/nodes/${nodeId}/users?${queryString(params)}`, options),
+  usersForExport: (nodeId, params, options = {}) => request(`/api/control/nodes/${nodeId}/users/export?${queryString(params)}`, options),
   createUser: (nodeId, payload) => request(`/api/control/nodes/${nodeId}/users`, {
     method: 'POST', headers: operationHeaders('manual-create'), body: JSON.stringify(payload),
   }),
-  connections: (nodeId, userId) => request(`/api/control/nodes/${nodeId}/users/${encodeURIComponent(userId)}/connections`),
+  connections: (nodeId, userId, options = {}) => request(`/api/control/nodes/${nodeId}/users/${encodeURIComponent(userId)}/connections`, options),
+  connectionsBatch: (nodeId, userIds, options = {}) => request(`/api/control/nodes/${nodeId}/users/connections/batch`, {
+    method: 'POST', body: JSON.stringify({ userIds }), ...options,
+  }),
   proxy: (nodeId, userId) => request(`/api/control/nodes/${nodeId}/users/${encodeURIComponent(userId)}/proxy`),
   traffic: (nodeId, userId) => request(`/api/control/nodes/${nodeId}/users/${encodeURIComponent(userId)}/traffic`),
+  updateUserPolicy: (nodeId, userId, payload) => request(`/api/control/nodes/${nodeId}/users/${encodeURIComponent(userId)}/policy`, {
+    method: 'PATCH', body: JSON.stringify(payload),
+  }),
   bindProxy: (nodeId, payload) => request(`/api/control/nodes/${nodeId}/users/bind-proxy`, {
     method: 'POST', headers: operationHeaders('manual-bind'), body: JSON.stringify(payload),
   }),
@@ -73,11 +81,12 @@ export const api = {
     method: 'DELETE', headers: operationHeaders('manual-delete'),
   }),
   allocations: (params = {}) => {
-    const query = queryString({ page: params.page, pageSize: params.pageSize })
+    const query = queryString({ page: params.page, pageSize: params.pageSize, ip: params.ip })
     return request(`/api/control/allocations${query ? `?${query}` : ''}`)
   },
   allocation: (allocationId) => request(`/api/control/allocations/${allocationId}`),
   retryAllocation: (allocationId) => request(`/api/control/allocations/${allocationId}/retry`, { method: 'POST' }),
+  deleteAllocation: (allocationId) => request(`/api/control/allocations/${allocationId}`, { method: 'DELETE' }),
   provision: (payload, idempotencyKey) => request('/api/control/allocations', {
     method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(payload),
   }),

@@ -73,15 +73,25 @@ public class ControlTokenFilter extends OncePerRequestFilter {
         if (path.startsWith("/api/control/node-installation")) {
             return "NODE_OPS".equals(role);
         }
+        if (path.matches("/api/control/nodes/[^/]+/token$")) {
+            return "NODE_OPS".equals(role);
+        }
         boolean write = Set.of("POST", "PATCH", "PUT", "DELETE").contains(method.toUpperCase());
         if (!write && "READONLY".equals(role)
-                && (path.matches(".*/users/[^/]+/(connections|proxy|traffic)$")
+                && (path.matches(".*/users/export$")
+                || path.matches(".*/users/[^/]+/(connections|proxy|traffic)$")
                 || path.matches("/api/control/allocations/[^/]+$"))) {
             return false;
         }
         if (!write) return true;
         if (path.startsWith("/api/control/nodes")) {
+            boolean batchConnectionRead = "POST".equalsIgnoreCase(method)
+                    && path.matches(".*/users/connections/batch$");
+            if (batchConnectionRead) return Set.of("NODE_OPS", "PROVISIONER").contains(role);
             boolean userOperation = path.matches(".*/users(?:/.*)?$");
+            boolean deleteUser = "DELETE".equalsIgnoreCase(method)
+                    && path.matches(".*/users/[^/]+$");
+            if (deleteUser) return Set.of("NODE_OPS", "PROVISIONER").contains(role);
             if (userOperation) return "PROVISIONER".equals(role);
             return "NODE_OPS".equals(role);
         }

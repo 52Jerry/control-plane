@@ -15,6 +15,7 @@ import com.example.nodecontrol.dto.ControlPlaneModels.ProxyProvisionRequest;
 import com.example.nodecontrol.dto.ControlPlaneModels.ProxyProvisionResult;
 import com.example.nodecontrol.dto.RemoteModels.CreateUserRequest;
 import com.example.nodecontrol.dto.RemoteModels.CreateUserResponse;
+import com.example.nodecontrol.dto.RemoteModels.NodeAccessInfo;
 import com.example.nodecontrol.dto.RemoteModels.ProxyConfig;
 import com.example.nodecontrol.dto.RemoteModels.SocksConnection;
 import com.example.nodecontrol.dto.RemoteModels.UserConnection;
@@ -27,6 +28,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -56,6 +58,7 @@ import java.net.UnknownHostException;
 public class ProvisioningService {
 
     private static final Collection<String> CAPACITY_STATES = List.of("PROVISIONING", "RETRYABLE", "ACTIVE");
+    private static final Set<String> DELETABLE_STATES = Set.of("PENDING", "RETRYABLE", "FAILED");
     private static final List<String> RESIDENTIAL_PROTOCOLS = List.of("vless", "vmess", "socks");
     private static final List<String> DIRECT_PROTOCOL_LINKS = List.of(
             "vless", "socksAcceleration", "vmess");
@@ -206,7 +209,9 @@ public class ProvisioningService {
         ProvisionRequest request = new ProvisionRequest(
                 allocation.getControlUserId(),
                 splitProtocols(allocation.getProtocols()),
-                null);
+                null,
+                allocation.getTrafficLimitBytes(),
+                allocation.getMaxSourceIps());
         AllocationView view = executeProvisioning(allocation, request, proxyFrom(allocation));
         audit("ALLOCATION_RETRIED", actorUserId, allocationId, "重试节点分配");
         return view;
@@ -225,9 +230,11 @@ public class ProvisioningService {
         CreateUserRequest remoteRequest = new CreateUserRequest(
                 prepared.userId(),
                 prepared.protocols(),
-                null,
-                null,
-                proxy
+                proxy == null ? null : proxy.username(),
+                proxy == null ? null : proxy.password(),
+                proxy,
+                prepared.trafficLimitBytes(),
+                prepared.maxSourceIps()
         );
 
         try {
@@ -263,24 +270,126 @@ public class ProvisioningService {
     }
 
     public List<AllocationView> listAllocations() {
-        return allocationRepository.findAllBy(Sort.by(Sort.Direction.DESC, "createdAt")).stream()
-                .map(allocation -> toView(allocation, false))
+        return listAllocations(null, false);
+    }
+
+    public List<AllocationView> listAllocations(String ip) {
+        return listAllocations(ip, false);
+    }
+
+    public List<AllocationView> listAllocations(String ip, boolean includeAccessCredentials) {
+        return allocationRepository.findAll(allocationSpecification(ip),
+                        Sort.by(Sort.Direction.DESC, "createdAt")).stream()
+                .map(allocation -> toView(allocation, false, includeAccessCredentials))
                 .toList();
     }
 
     public AllocationPageResponse listAllocations(int page, int pageSize) {
+        return listAllocations(page, pageSize, null, false);
+    }
+
+    public AllocationPageResponse listAllocations(int page, int pageSize, String ip) {
+        return listAllocations(page, pageSize, ip, false);
+    }
+
+    public AllocationPageResponse listAllocations(int page,
+                                                   int pageSize,
+                                                   String ip,
+                                                   boolean includeAccessCredentials) {
         if (page < 1) {
             throw new IllegalArgumentException("页码必须从 1 开始");
         }
         if (pageSize < 1 || pageSize > 100) {
             throw new IllegalArgumentException("每页条数必须在 1-100 之间");
         }
-        Page<ResidentialAllocation> result = allocationRepository.findAllBy(
+        Page<ResidentialAllocation> result = allocationRepository.findAll(
+                allocationSpecification(ip),
                 PageRequest.of(page - 1, pageSize, Sort.by(Sort.Direction.DESC, "createdAt")));
         List<AllocationView> items = result.getContent().stream()
-                .map(allocation -> toView(allocation, false))
+                .map(allocation -> toView(allocation, false, includeAccessCredentials))
                 .toList();
         return new AllocationPageResponse(items, page, pageSize, result.getTotalElements(), result.getTotalPages());
+    }
+
+    public void deleteAllocation(UUID allocationId) {
+        deleteAllocation(allocationId, null);
+    }
+
+    public void deleteAllocation(UUID allocationId, UUID actorUserId) {
+        ResidentialAllocation allocation = allocationRepository.findById(allocationId)
+                .orElseThrow(() -> new NoSuchElementException("分配记录不存在"));
+        if (!DELETABLE_STATES.contains(allocation.getState())) {
+            throw new IllegalStateException("仅能删除待分配、待重试或失败的记录");
+        }
+        allocationRepository.delete(allocation);
+        audit("ALLOCATION_DELETED", actorUserId, allocationId, "删除失败或待分配的节点记录");
+    }
+
+    public NodeAccessInfo accessInfo(ResidentialAllocation allocation, boolean includeCredentials) {
+        if (allocation == null) {
+            return null;
+        }
+        boolean upstream = "UPSTREAM_SOCKS".equals(allocation.getProvisioningMode());
+        String ip = upstream ? allocation.getProxySourceIp() : firstText(allocation.getSocksHost(), nodeHost(allocation));
+        Integer port = upstream
+                ? firstInteger(allocation.getProxyPort(), allocation.getProxySourcePort())
+                : allocation.getSocksPort();
+        String username = null;
+        String password = null;
+        if (includeCredentials) {
+            username = secretCipher.decrypt(upstream
+                    ? allocation.getProxyUsernameCipher()
+                    : allocation.getSocksUsernameCipher());
+            password = secretCipher.decrypt(upstream
+                    ? allocation.getProxyPasswordCipher()
+                    : allocation.getSocksPasswordCipher());
+        }
+        CountryInfo country = resolveCountry(ip);
+        return new NodeAccessInfo(ip, port, username, password,
+                country.code(), country.name(), country.city());
+    }
+
+    public NodeAccessInfo accessInfo(UserConnection connection, boolean includeCredentials) {
+        if (connection == null || connection.socks() == null) {
+            return null;
+        }
+        SocksConnection socks = connection.socks();
+        CountryInfo country = resolveCountry(socks.host());
+        return new NodeAccessInfo(
+                socks.host(), socks.port(),
+                includeCredentials ? socks.username() : null,
+                includeCredentials ? socks.password() : null,
+                country.code(), country.name(), country.city());
+    }
+
+    public NodeAccessInfo accessInfo(String ip,
+                                     Integer port,
+                                     String username,
+                                     boolean includeCredentials) {
+        if ((ip == null || ip.isBlank()) && port == null && (username == null || username.isBlank())) {
+            return null;
+        }
+        CountryInfo country = resolveCountry(ip);
+        return new NodeAccessInfo(ip, port, includeCredentials ? username : null, null,
+                country.code(), country.name(), country.city());
+    }
+
+    private Specification<ResidentialAllocation> allocationSpecification(String ip) {
+        String normalized = ip == null ? null : ip.trim().toLowerCase(Locale.ROOT);
+        return (root, query, builder) -> {
+            query.distinct(true);
+            if (normalized == null || normalized.isBlank()) {
+                return builder.conjunction();
+            }
+            String pattern = "%" + normalized + "%";
+            var nodeJoin = root.join("node", jakarta.persistence.criteria.JoinType.LEFT);
+            return builder.or(
+                    builder.like(builder.lower(root.get("proxySourceIp")), pattern),
+                    builder.like(builder.lower(root.get("proxySourceDomain")), pattern),
+                    builder.like(builder.lower(root.get("proxyServer")), pattern),
+                    builder.like(builder.lower(root.get("socksHost")), pattern),
+                    builder.like(builder.lower(nodeJoin.get("host")), pattern));
+        };
     }
 
     public AllocationView getAllocation(UUID allocationId) {
@@ -306,6 +415,7 @@ public class ProvisioningService {
                     remoteIdempotencyKey(requestKey),
                     String.join(",", request.protocols())
             );
+            allocation.setUserPolicy(request.trafficLimitBytes(), request.maxSourceIps());
             try {
                 return allocationRepository.saveAndFlush(allocation);
             } catch (DataIntegrityViolationException exception) {
@@ -346,6 +456,7 @@ public class ProvisioningService {
                     proxy.port(),
                     secretCipher.encrypt(proxy.username()),
                     secretCipher.encrypt(proxy.password()));
+            allocation.setUserPolicy(request.trafficLimitBytes(), request.maxSourceIps());
             try {
                 return allocationRepository.saveAndFlush(allocation);
             } catch (DataIntegrityViolationException exception) {
@@ -407,6 +518,8 @@ public class ProvisioningService {
                 splitProtocols(allocation.getProtocols()),
                 allocation.getRemoteIdempotencyKey(),
                 node,
+                allocation.getTrafficLimitBytes(),
+                allocation.getMaxSourceIps(),
                 null
         );
     }
@@ -577,7 +690,9 @@ public class ProvisioningService {
                     .filter(item -> item != null && item.userId() != null)
                     .anyMatch(item -> userId.equals(item.userId()));
             if (exists) {
-                throw new IllegalStateException("节点用户 ID 已存在于当前服务器的节点用户中");
+                throw new IllegalStateException(
+                        "节点用户 ID " + userId + " 已存在于当前服务器的节点用户中（"
+                                + node.getName() + "），请先在节点用户管理中删除后再重新生成");
             }
         }
     }
@@ -588,6 +703,16 @@ public class ProvisioningService {
         }
         String otherServer = serverIdentity(otherNode);
         return otherServer != null && targetServer.equalsIgnoreCase(otherServer);
+    }
+
+    boolean sharesServer(ManagedNode firstNode, ManagedNode secondNode) {
+        if (firstNode == null || secondNode == null) {
+            return false;
+        }
+        if (firstNode.getId() != null && firstNode.getId().equals(secondNode.getId())) {
+            return true;
+        }
+        return sameServer(serverIdentity(firstNode), secondNode);
     }
 
     private String serverIdentity(ManagedNode node) {
@@ -767,37 +892,19 @@ public class ProvisioningService {
     }
 
     private AllocationView toView(ResidentialAllocation allocation, boolean includeConnection) {
+        return toView(allocation, includeConnection, false);
+    }
+
+    private AllocationView toView(ResidentialAllocation allocation,
+                                  boolean includeConnection,
+                                  boolean includeAccessCredentials) {
         ManagedNode node = allocation.getNode();
-        UserConnection connection = null;
+        UserConnection connection = includeConnection ? storedConnection(allocation) : null;
         String proxyUsername = null;
         String proxyPassword = null;
         if (includeConnection && "UPSTREAM_SOCKS".equals(allocation.getProvisioningMode())) {
             proxyUsername = secretCipher.decrypt(allocation.getProxyUsernameCipher());
             proxyPassword = secretCipher.decrypt(allocation.getProxyPasswordCipher());
-        }
-        if (includeConnection && "ACTIVE".equals(allocation.getState())) {
-            SocksConnection socks = allocation.getSocksHost() == null ? null : new SocksConnection(
-                    allocation.getSocksHost(),
-                    allocation.getSocksPort(),
-                    secretCipher.decrypt(allocation.getSocksUsernameCipher()),
-                    secretCipher.decrypt(allocation.getSocksPasswordCipher()));
-            Map<String, String> protocolsAll = decryptProtocolsAll(allocation.getProtocolsAllCipher());
-            Map<String, Object> protocolInfo = decryptProtocolInfo(allocation.getProtocolInfoCipher());
-            if ("UPSTREAM_SOCKS".equals(allocation.getProvisioningMode())) {
-                protocolInfo = enrichProtocolInfo(protocolInfo, allocation);
-            }
-            connection = new UserConnection(
-                    true,
-                    allocation.getRemoteUserId(),
-                    allocation.getConnectionUuid(),
-                    splitProtocols(allocation.getProtocols()),
-                    secretCipher.decrypt(allocation.getVlessCipher()),
-                    secretCipher.decrypt(allocation.getVmessCipher()),
-                    socks,
-                    allocation.isProxyBound(),
-                    allocation.getCompletedAt(),
-                    protocolsAll,
-                    protocolInfo);
         }
         Map<String, String> protocolsAll = connection == null ? Map.of() : connection.protocolsAll();
         Map<String, Object> protocolInfo = connection == null ? Map.of() : connection.protocolInfo();
@@ -829,7 +936,48 @@ public class ProvisioningService {
                         : allocation.getProxySourceDomain(),
                 allocation.getProxyPort() != null
                         ? allocation.getProxyPort()
-                        : allocation.getProxySourcePort());
+                        : allocation.getProxySourcePort(),
+                accessInfo(allocation, includeAccessCredentials));
+    }
+
+    public UserConnection storedConnection(ResidentialAllocation allocation) {
+        if (allocation == null || !"ACTIVE".equals(allocation.getState())) {
+            return null;
+        }
+        SocksConnection socks = allocation.getSocksHost() == null ? null : new SocksConnection(
+                allocation.getSocksHost(),
+                allocation.getSocksPort(),
+                secretCipher.decrypt(allocation.getSocksUsernameCipher()),
+                secretCipher.decrypt(allocation.getSocksPasswordCipher()));
+        Map<String, String> protocolsAll = decryptProtocolsAll(allocation.getProtocolsAllCipher());
+        Map<String, Object> protocolInfo = decryptProtocolInfo(allocation.getProtocolInfoCipher());
+        if ("UPSTREAM_SOCKS".equals(allocation.getProvisioningMode())) {
+            protocolInfo = enrichProtocolInfo(protocolInfo, allocation);
+        }
+        return new UserConnection(
+                true,
+                firstText(allocation.getRemoteUserId(), allocation.getControlUserId()),
+                allocation.getConnectionUuid(),
+                splitProtocols(allocation.getProtocols()),
+                secretCipher.decrypt(allocation.getVlessCipher()),
+                secretCipher.decrypt(allocation.getVmessCipher()),
+                socks,
+                allocation.isProxyBound(),
+                allocation.getCompletedAt(),
+                protocolsAll,
+                protocolInfo);
+    }
+
+    private String nodeHost(ResidentialAllocation allocation) {
+        return allocation.getNode() == null ? null : allocation.getNode().getHost();
+    }
+
+    private String firstText(String first, String second) {
+        return first != null && !first.isBlank() ? first : second;
+    }
+
+    private Integer firstInteger(Integer first, Integer second) {
+        return first != null ? first : second;
     }
 
     private Map<String, String> decryptProtocolsAll(String cipherText) {
@@ -1200,7 +1348,8 @@ public class ProvisioningService {
         } else {
             userId = normalizeNodeUserId(userId, "用户 ID");
         }
-        return new ProvisionRequest(userId, request.protocols(), request.preferredNodeId());
+        return new ProvisionRequest(userId, request.protocols(), request.preferredNodeId(),
+                request.trafficLimitBytes(), request.maxSourceIps());
     }
 
     private String normalizeBatchUserId(String username, String batchKey, int rowNumber) {
@@ -1240,6 +1389,7 @@ public class ProvisioningService {
         if (allocation.getProxyServer() == null || allocation.getProxyPort() == null) {
             throw new IllegalStateException("SOCKS 分配记录缺少上游代理信息");
         }
+        CountryInfo country = resolveCountry(allocation.getProxySourceIp());
         return new ProxyConfig(
                 "socks5",
                 allocation.getProxyServer(),
@@ -1248,7 +1398,7 @@ public class ProvisioningService {
                 secretCipher.decrypt(allocation.getProxyPasswordCipher()),
                 allocation.getProxySourceIp(),
                 allocation.getProxyServer(),
-                null, null, null);
+                country.code(), country.name(), country.city());
     }
 
     private ProxyProvisionResult toProxyResult(ParsedProxyRow row,
@@ -1512,10 +1662,12 @@ public class ProvisioningService {
             List<String> protocols,
             String remoteIdempotencyKey,
             ManagedNode node,
+            Long trafficLimitBytes,
+            Integer maxSourceIps,
             AllocationView activeView
     ) {
         static PreparedProvisioning active(AllocationView view) {
-            return new PreparedProvisioning(null, null, List.of(), null, null, view);
+            return new PreparedProvisioning(null, null, List.of(), null, null, null, null, view);
         }
     }
 

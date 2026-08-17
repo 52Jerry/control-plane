@@ -13,6 +13,7 @@ import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -67,14 +68,17 @@ public class ProvisioningController {
     @GetMapping
     public ResponseEntity<?> list(
             @RequestParam(value = "page", required = false) Integer page,
-            @RequestParam(value = "pageSize", required = false) Integer pageSize
+            @RequestParam(value = "pageSize", required = false) Integer pageSize,
+            @RequestParam(value = "ip", required = false) String ip,
+            HttpServletRequest servletRequest
     ) {
         if ((page == null) != (pageSize == null)) {
             throw new IllegalArgumentException("page 和 pageSize 必须同时提供");
         }
+        boolean includeAccessCredentials = canViewSensitive(servletRequest);
         Object body = page == null
-                ? provisioningService.listAllocations()
-                : provisioningService.listAllocations(page, pageSize);
+                ? provisioningService.listAllocations(ip, includeAccessCredentials)
+                : provisioningService.listAllocations(page, pageSize, ip, includeAccessCredentials);
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
                 .body(body);
@@ -97,7 +101,25 @@ public class ProvisioningController {
                         : provisioningService.retry(allocationId, actor));
     }
 
+    @DeleteMapping("/{allocationId}")
+    public ResponseEntity<Void> delete(@PathVariable UUID allocationId, HttpServletRequest servletRequest) {
+        UUID actor = actor(servletRequest);
+        if (actor == null) {
+            provisioningService.deleteAllocation(allocationId);
+        } else {
+            provisioningService.deleteAllocation(allocationId, actor);
+        }
+        return ResponseEntity.noContent()
+                .cacheControl(CacheControl.noStore())
+                .build();
+    }
+
     private UUID actor(HttpServletRequest request) {
         return sessionService.authenticatedSession(request).map(ControlSessionService.AuthenticatedSession::userId).orElse(null);
+    }
+
+    private boolean canViewSensitive(HttpServletRequest request) {
+        Object role = request.getAttribute("control.role");
+        return role == null || List.of("ADMIN", "NODE_OPS", "PROVISIONER").contains(String.valueOf(role));
     }
 }
