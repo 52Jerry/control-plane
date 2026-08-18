@@ -47,6 +47,7 @@ class NodeUserServiceTest {
     private ResidentialAllocationRepository allocationRepository;
     private ProvisioningService provisioningService;
     private IpCountryResolver ipCountryResolver;
+    private UserPolicyDefaultsService policyDefaultsService;
     private NodeUserService service;
     private UUID nodeId;
     private ManagedNode node;
@@ -59,9 +60,12 @@ class NodeUserServiceTest {
         allocationRepository = mock(ResidentialAllocationRepository.class);
         provisioningService = mock(ProvisioningService.class);
         ipCountryResolver = mock(IpCountryResolver.class);
+        policyDefaultsService = mock(UserPolicyDefaultsService.class);
+        when(policyDefaultsService.getDefaults()).thenReturn(
+                new UserPolicyDefaultsService.DefaultUserPolicy(200L * 1024 * 1024 * 1024, 5));
         service = new NodeUserService(
                 nodeService, client, operationService, allocationRepository,
-                provisioningService, ipCountryResolver, null);
+                provisioningService, policyDefaultsService, ipCountryResolver, null);
 
         nodeId = UUID.randomUUID();
         node = new ManagedNode("Node A", "http://node.example:8088", "encrypted-token");
@@ -198,6 +202,28 @@ class NodeUserServiceTest {
         verify(client).createUser(eq(node), captor.capture(), eq("create-custom-policy"));
         assertThat(captor.getValue().trafficLimitBytes()).isEqualTo(10L * 1024 * 1024 * 1024);
         assertThat(captor.getValue().maxSourceIps()).isEqualTo(2);
+    }
+
+    @Test
+    void createUserReadsMissingPolicyFromDatabaseSettingsService() {
+        when(policyDefaultsService.getDefaults()).thenReturn(
+                new UserPolicyDefaultsService.DefaultUserPolicy(300L * 1024 * 1024 * 1024, 7));
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(5)).get())
+                .when(operationService)
+                .execute(any(), anyString(), anyString(), any(), eq(CreateUserResponse.class), any());
+        when(client.createUser(eq(node), any(CreateUserRequest.class), eq("create-database-policy")))
+                .thenReturn(new CreateUserResponse(
+                        true, "database-policy", UUID.randomUUID().toString(), List.of("socks"),
+                        null, null, new SocksConnection("node.example", 5001, "user", "secret"), false));
+
+        service.createUser(nodeId, new CreateUserRequest(
+                "database-policy", List.of("socks"), null, null, null, null, null),
+                "create-database-policy");
+
+        ArgumentCaptor<CreateUserRequest> captor = ArgumentCaptor.forClass(CreateUserRequest.class);
+        verify(client).createUser(eq(node), captor.capture(), eq("create-database-policy"));
+        assertThat(captor.getValue().trafficLimitBytes()).isEqualTo(300L * 1024 * 1024 * 1024);
+        assertThat(captor.getValue().maxSourceIps()).isEqualTo(7);
     }
 
     @Test

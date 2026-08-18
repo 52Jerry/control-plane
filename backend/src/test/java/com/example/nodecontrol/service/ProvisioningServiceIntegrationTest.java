@@ -5,6 +5,8 @@ import com.example.nodecontrol.client.RemoteNodeException;
 import com.example.nodecontrol.config.ControlPlaneProperties;
 import com.example.nodecontrol.domain.ManagedNode;
 import com.example.nodecontrol.domain.ManagedNodeRepository;
+import com.example.nodecontrol.domain.ControlPlaneSettings;
+import com.example.nodecontrol.domain.ControlPlaneSettingsRepository;
 import com.example.nodecontrol.domain.ResidentialAllocation;
 import com.example.nodecontrol.domain.ResidentialAllocationRepository;
 import com.example.nodecontrol.dto.ControlPlaneModels.ProvisionRequest;
@@ -64,6 +66,9 @@ class ProvisioningServiceIntegrationTest {
     private ResidentialAllocationRepository allocationRepository;
 
     @Autowired
+    private ControlPlaneSettingsRepository settingsRepository;
+
+    @Autowired
     private SecretCipher secretCipher;
 
     @Autowired
@@ -82,6 +87,7 @@ class ProvisioningServiceIntegrationTest {
     void cleanDatabase() {
         allocationRepository.deleteAll();
         nodeRepository.deleteAll();
+        settingsRepository.deleteAll();
         reset(nodeManagerClient, ipCountryResolver, hostAddressResolver);
         when(ipCountryResolver.resolve(any())).thenReturn(IpCountryResolver.UNKNOWN);
         when(hostAddressResolver.resolve(any())).thenReturn(Set.of());
@@ -146,6 +152,22 @@ class ProvisioningServiceIntegrationTest {
         ResidentialAllocation stored = allocationRepository.findByRequestKey("default-policy-order").orElseThrow();
         assertThat(stored.getTrafficLimitBytes()).isEqualTo(200L * 1024 * 1024 * 1024);
         assertThat(stored.getMaxSourceIps()).isEqualTo(5);
+    }
+
+    @Test
+    void directProvisionUsesPolicyStoredInDatabase() {
+        settingsRepository.save(new ControlPlaneSettings(300L * 1024 * 1024 * 1024, 7));
+        saveOnlineNode("node-database-policy", 10);
+        when(nodeManagerClient.createUser(any(), any(), any()))
+                .thenReturn(successResponse("database-policy-user"));
+
+        provisioningService.provision("database-policy-order", new ProvisionRequest(
+                "database-policy-user", List.of("vless", "vmess", "socks"), null));
+
+        ArgumentCaptor<CreateUserRequest> requestCaptor = ArgumentCaptor.forClass(CreateUserRequest.class);
+        verify(nodeManagerClient).createUser(any(), requestCaptor.capture(), any());
+        assertThat(requestCaptor.getValue().trafficLimitBytes()).isEqualTo(300L * 1024 * 1024 * 1024);
+        assertThat(requestCaptor.getValue().maxSourceIps()).isEqualTo(7);
     }
 
     @Test

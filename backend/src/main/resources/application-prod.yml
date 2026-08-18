@@ -65,8 +65,6 @@ control-plane:
 
   provisioning:
     default-max-users: ${NODE_DEFAULT_MAX_USERS:500}
-    default-traffic-limit-bytes: ${NODE_DEFAULT_TRAFFIC_LIMIT_BYTES:214748364800}
-    default-max-source-ips: ${NODE_DEFAULT_MAX_SOURCE_IPS:5}
     operation-stale-after-ms: ${PROVISIONING_OPERATION_STALE_AFTER_MS:120000}
     # 生产默认要求新版 Node Manager 返回完整五协议。
     require-complete-protocols-all: ${CONTROL_PLANE_REQUIRE_COMPLETE_PROTOCOLS_ALL:true}

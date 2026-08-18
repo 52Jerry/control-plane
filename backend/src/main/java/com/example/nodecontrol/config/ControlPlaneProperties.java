@@ -182,8 +182,6 @@ public class ControlPlaneProperties {
 
     public static class Provisioning {
         private int defaultMaxUsers = 500;
-        private long defaultTrafficLimitBytes = 200L * 1024 * 1024 * 1024;
-        private int defaultMaxSourceIps = 5;
         private long operationStaleAfterMs = 120000;
         /** Whether residential allocations must include all five generated links. */
         private boolean requireCompleteProtocolsAll = false;
@@ -194,22 +192,6 @@ public class ControlPlaneProperties {
 
         public void setDefaultMaxUsers(int defaultMaxUsers) {
             this.defaultMaxUsers = defaultMaxUsers;
-        }
-
-        public long getDefaultTrafficLimitBytes() {
-            return defaultTrafficLimitBytes;
-        }
-
-        public void setDefaultTrafficLimitBytes(long defaultTrafficLimitBytes) {
-            this.defaultTrafficLimitBytes = defaultTrafficLimitBytes;
-        }
-
-        public int getDefaultMaxSourceIps() {
-            return defaultMaxSourceIps;
-        }
-
-        public void setDefaultMaxSourceIps(int defaultMaxSourceIps) {
-            this.defaultMaxSourceIps = defaultMaxSourceIps;
         }
 
         public long getOperationStaleAfterMs() {

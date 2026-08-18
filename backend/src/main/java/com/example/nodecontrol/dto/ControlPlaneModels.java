@@ -276,6 +276,12 @@ public final class ControlPlaneModels {
     ) {
     }
 
+    public record DefaultUserPolicyResponse(
+            long trafficLimitBytes,
+            int maxSourceIps
+    ) {
+    }
+
     public record ProxyProvisionBatchResponse(
             int total,
             int succeeded,

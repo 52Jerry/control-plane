@@ -9,6 +9,7 @@ import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
 
 import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -125,6 +126,31 @@ class SchemaCompatibilityMigrationTest {
         new SchemaCompatibilityMigration(dataSource, jdbcTemplate).migrate();
 
         verify(jdbcTemplate, never()).execute(org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    void createsAndInitializesDatabaseSettingsForMySql() throws Exception {
+        DataSource dataSource = mock(DataSource.class);
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        Connection connection = mock(Connection.class);
+        DatabaseMetaData metadata = mock(DatabaseMetaData.class);
+
+        when(dataSource.getConnection()).thenReturn(connection);
+        when(connection.getMetaData()).thenReturn(metadata);
+        when(metadata.getDatabaseProductName()).thenReturn("MySQL");
+        ResultSet lowerCaseTable = resultSet(false);
+        ResultSet upperCaseTable = resultSet(false);
+        when(metadata.getTables(null, null, "control_plane_settings", new String[]{"TABLE"}))
+                .thenReturn(lowerCaseTable);
+        when(metadata.getTables(null, null, "CONTROL_PLANE_SETTINGS", new String[]{"TABLE"}))
+                .thenReturn(upperCaseTable);
+
+        new SchemaCompatibilityMigration(dataSource, jdbcTemplate).migrate();
+
+        verify(jdbcTemplate).execute(contains("CREATE TABLE control_plane_settings"));
+        verify(jdbcTemplate).update(
+                contains("INSERT INTO control_plane_settings"),
+                eq(214748364800L), eq(5));
     }
 
     private ResultSet resultSet(boolean hasRow) throws Exception {

@@ -74,6 +74,7 @@ public class ProvisioningService {
     private final SecretCipher secretCipher;
     private final ObjectMapper objectMapper;
     private final ControlPlaneProperties properties;
+    private final UserPolicyDefaultsService policyDefaultsService;
     private final HostAddressResolver hostAddressResolver;
     private final IpCountryResolver ipCountryResolver;
     private final TransactionTemplate transactionTemplate;
@@ -85,6 +86,7 @@ public class ProvisioningService {
                                SecretCipher secretCipher,
                                ObjectMapper objectMapper,
                                ControlPlaneProperties properties,
+                               UserPolicyDefaultsService policyDefaultsService,
                                HostAddressResolver hostAddressResolver,
                                IpCountryResolver ipCountryResolver,
                                PlatformTransactionManager transactionManager,
@@ -95,6 +97,7 @@ public class ProvisioningService {
         this.secretCipher = secretCipher;
         this.objectMapper = objectMapper;
         this.properties = properties;
+        this.policyDefaultsService = policyDefaultsService;
         this.hostAddressResolver = hostAddressResolver;
         this.ipCountryResolver = ipCountryResolver;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
@@ -1354,12 +1357,12 @@ public class ProvisioningService {
     }
 
     private ProvisionRequest withDefaultPolicy(ProvisionRequest request) {
-        ControlPlaneProperties.Provisioning defaults = properties.getProvisioning();
+        UserPolicyDefaultsService.DefaultUserPolicy defaults = policyDefaultsService.getDefaults();
         Long trafficLimitBytes = request.trafficLimitBytes() == null
-                ? defaults.getDefaultTrafficLimitBytes()
+                ? defaults.trafficLimitBytes()
                 : request.trafficLimitBytes();
         Integer maxSourceIps = request.maxSourceIps() == null
-                ? defaults.getDefaultMaxSourceIps()
+                ? defaults.maxSourceIps()
                 : request.maxSourceIps();
         return new ProvisionRequest(request.userId(), request.protocols(), request.preferredNodeId(),
                 trafficLimitBytes, maxSourceIps);

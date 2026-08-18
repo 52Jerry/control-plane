@@ -43,6 +43,7 @@ public class SchemaCompatibilityMigration {
     private static final String CONTROL_USER_TABLE = "control_users";
     private static final String CONTROL_USER_ROLE_COLUMN = "role";
     private static final String AUDIT_TABLE = "control_audit_logs";
+    private static final String SETTINGS_TABLE = "control_plane_settings";
 
     private final DataSource dataSource;
     private final JdbcTemplate jdbcTemplate;
@@ -63,6 +64,7 @@ public class SchemaCompatibilityMigration {
             DatabaseMetaData metadata = connection.getMetaData();
             ensureControlUserRole(metadata);
             ensureAuditTable(metadata);
+            ensureSettingsTable(metadata);
             if (!tableExists(metadata, ALLOCATION_TABLE)) return;
 
             dropLegacyGlobalUserIdUniqueIndex(metadata);
@@ -154,6 +156,22 @@ public class SchemaCompatibilityMigration {
                 + "PRIMARY KEY (id), INDEX idx_control_audit_created_at (created_at)"
                 + ")");
         log.info("Created compatibility table {}", AUDIT_TABLE);
+    }
+
+    private void ensureSettingsTable(DatabaseMetaData metadata) throws SQLException {
+        if (!tableExists(metadata, SETTINGS_TABLE)) {
+            jdbcTemplate.execute("CREATE TABLE control_plane_settings ("
+                    + "id INT NOT NULL,"
+                    + "default_traffic_limit_bytes BIGINT NOT NULL,"
+                    + "default_max_source_ips INT NOT NULL,"
+                    + "PRIMARY KEY (id)"
+                    + ")");
+            log.info("Created compatibility table {}", SETTINGS_TABLE);
+        }
+        jdbcTemplate.update("INSERT INTO control_plane_settings "
+                + "(id, default_traffic_limit_bytes, default_max_source_ips) "
+                + "VALUES (1, ?, ?) ON DUPLICATE KEY UPDATE id = id",
+                200L * 1024 * 1024 * 1024, 5);
     }
 
     private boolean tableExists(DatabaseMetaData metadata, String tableName) throws SQLException {

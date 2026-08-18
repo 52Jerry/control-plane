@@ -2,7 +2,7 @@ package com.example.nodecontrol.service;
 
 import com.example.nodecontrol.client.NodeManagerClient;
 import com.example.nodecontrol.client.RemoteNodeException;
-import com.example.nodecontrol.config.ControlPlaneProperties;
+import com.example.nodecontrol.domain.ControlPlaneSettings;
 import com.example.nodecontrol.domain.ManagedNode;
 import com.example.nodecontrol.domain.ResidentialAllocation;
 import com.example.nodecontrol.domain.ResidentialAllocationRepository;
@@ -52,7 +52,7 @@ public class NodeUserService {
     private final ProvisioningService provisioningService;
     private final IpCountryResolver ipCountryResolver;
     private final AuditLogService auditLogService;
-    private final ControlPlaneProperties properties;
+    private final UserPolicyDefaultsService policyDefaultsService;
 
     private static final List<String> ACTIVE_ALLOCATION_STATES =
             List.of("PROVISIONING", "RETRYABLE", "ACTIVE");
@@ -69,7 +69,7 @@ public class NodeUserService {
                            ResidentialAllocationRepository allocationRepository,
                            ProvisioningService provisioningService) {
         this(nodeService, client, operationService, allocationRepository, provisioningService,
-                new ControlPlaneProperties(), null, null);
+                null, null, null);
     }
 
     public NodeUserService(ManagedNodeService nodeService,
@@ -80,7 +80,7 @@ public class NodeUserService {
                            IpCountryResolver ipCountryResolver,
                            AuditLogService auditLogService) {
         this(nodeService, client, operationService, allocationRepository, provisioningService,
-                new ControlPlaneProperties(), ipCountryResolver, auditLogService);
+                null, ipCountryResolver, auditLogService);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -89,7 +89,7 @@ public class NodeUserService {
                            RemoteOperationService operationService,
                            ResidentialAllocationRepository allocationRepository,
                            ProvisioningService provisioningService,
-                           ControlPlaneProperties properties,
+                           UserPolicyDefaultsService policyDefaultsService,
                            IpCountryResolver ipCountryResolver,
                            AuditLogService auditLogService) {
         this.nodeService = nodeService;
@@ -97,7 +97,7 @@ public class NodeUserService {
         this.operationService = operationService;
         this.allocationRepository = allocationRepository;
         this.provisioningService = provisioningService;
-        this.properties = properties;
+        this.policyDefaultsService = policyDefaultsService;
         this.ipCountryResolver = ipCountryResolver;
         this.auditLogService = auditLogService;
     }
@@ -422,14 +422,14 @@ public class NodeUserService {
     }
 
     private CreateUserRequest withDefaultPolicy(CreateUserRequest request) {
-        ControlPlaneProperties.Provisioning defaults = properties.getProvisioning();
+        UserPolicyDefaultsService.DefaultUserPolicy defaults = defaultUserPolicy();
         return new CreateUserRequest(
                 request.userId(), request.protocols(), request.socksUsername(), request.socksPassword(), request.proxy(),
                 request.trafficLimitBytes() == null
-                        ? defaults.getDefaultTrafficLimitBytes()
+                        ? defaults.trafficLimitBytes()
                         : request.trafficLimitBytes(),
                 request.maxSourceIps() == null
-                        ? defaults.getDefaultMaxSourceIps()
+                        ? defaults.maxSourceIps()
                         : request.maxSourceIps());
     }
 
@@ -449,9 +449,9 @@ public class NodeUserService {
 
     public UserPolicyMigrationResponse migrateAllUsersToDefaultPolicy(UUID nodeId, UUID actorUserId) {
         ManagedNode node = nodeService.getNode(nodeId);
-        ControlPlaneProperties.Provisioning defaults = properties.getProvisioning();
+        UserPolicyDefaultsService.DefaultUserPolicy defaults = defaultUserPolicy();
         UpdateUserPolicyRequest request = new UpdateUserPolicyRequest(
-                defaults.getDefaultTrafficLimitBytes(), defaults.getDefaultMaxSourceIps());
+                defaults.trafficLimitBytes(), defaults.maxSourceIps());
         List<UserSummary> users = scanAllUsers(node, null);
         List<UserPolicyMigrationFailure> failures = new ArrayList<>();
         int succeeded = 0;
@@ -474,7 +474,15 @@ public class NodeUserService {
                 "批量更新用户限制策略：成功 " + succeeded + "，失败 " + failures.size());
         return new UserPolicyMigrationResponse(
                 nodeId, node.getName(), users.size(), succeeded, failures.size(),
-                defaults.getDefaultTrafficLimitBytes(), defaults.getDefaultMaxSourceIps(), List.copyOf(failures));
+                defaults.trafficLimitBytes(), defaults.maxSourceIps(), List.copyOf(failures));
+    }
+
+    private UserPolicyDefaultsService.DefaultUserPolicy defaultUserPolicy() {
+        return policyDefaultsService == null
+                ? new UserPolicyDefaultsService.DefaultUserPolicy(
+                        ControlPlaneSettings.INITIAL_TRAFFIC_LIMIT_BYTES,
+                        ControlPlaneSettings.INITIAL_MAX_SOURCE_IPS)
+                : policyDefaultsService.getDefaults();
     }
 
     private void syncAllocationPolicy(UUID nodeId, String userId, UserPolicyResponse response) {

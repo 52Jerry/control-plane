@@ -67,6 +67,18 @@ BEGIN
         KEY `idx_control_audit_created_at` (`created_at`)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+    CREATE TABLE IF NOT EXISTS `control_plane_settings` (
+        `id` INT NOT NULL,
+        `default_traffic_limit_bytes` BIGINT NOT NULL,
+        `default_max_source_ips` INT NOT NULL,
+        PRIMARY KEY (`id`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+    INSERT INTO `control_plane_settings`
+        (`id`, `default_traffic_limit_bytes`, `default_max_source_ips`)
+    VALUES (1, 214748364800, 5)
+    ON DUPLICATE KEY UPDATE `id` = VALUES(`id`);
+
     SELECT COUNT(*) INTO v_table_count
     FROM information_schema.TABLES
     WHERE TABLE_SCHEMA = DATABASE()
@@ -187,4 +199,5 @@ DELIMITER ;
 -- SHOW COLUMNS FROM `residential_allocations` LIKE 'traffic_limit_bytes';
 -- SHOW COLUMNS FROM `residential_allocations` LIKE 'max_source_ips';
 -- SHOW COLUMNS FROM `managed_nodes` LIKE 'socks_inbound_port';
+-- SELECT * FROM `control_plane_settings` WHERE `id` = 1;
 -- SHOW INDEX FROM `residential_allocations`;

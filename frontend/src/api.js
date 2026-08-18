@@ -41,6 +41,7 @@ function operationHeaders(prefix) {
 
 export const api = {
   meta: () => request('/api/control/meta'),
+  defaultUserPolicy: () => request('/api/control/settings/default-user-policy'),
   session: () => request('/api/control/auth/session'),
   login: (payload) => request('/api/control/auth/login', { method: 'POST', body: JSON.stringify(payload) }),
   logout: () => request('/api/control/auth/logout', { method: 'POST' }),

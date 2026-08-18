@@ -626,6 +626,15 @@ class ControlPlaneWebContractTest {
     }
 
     @Test
+    void authenticatedUsersCanReadDatabaseDefaultPolicy() throws Exception {
+        mockMvc.perform(get("/api/control/settings/default-user-policy")
+                        .header("X-Control-Token", "admin-secret"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.trafficLimitBytes").value(214748364800L))
+                .andExpect(jsonPath("$.maxSourceIps").value(5));
+    }
+
+    @Test
     void provisionerMayProvisionButCannotRegisterNode() throws Exception {
         Cookie provisioner = createRoleAccount("PROVISIONER");
         ProxyProvisionBatchResponse response = new ProxyProvisionBatchResponse(0, 0, 0, List.of());
