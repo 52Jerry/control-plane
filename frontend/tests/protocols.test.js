@@ -373,7 +373,8 @@ test('export data maps original and accelerated credentials consistently', () =>
     link: '38.30.216.149:9335:source-user:source-password',
   })
   assert.deepEqual(buildConnectionExportData(connection, 'fingerprintAcceleration'), {
-    ip: 'proxy.example.test',
+    ip: '198.51.100.10',
+    accelerationDomain: 'proxy.example.test',
     port: 5001,
     username: 'public-user',
     password: 'local-password',
@@ -381,25 +382,39 @@ test('export data maps original and accelerated credentials consistently', () =>
   })
 
   const socks = buildConnectionExportData(connection, 'socksAcceleration')
-  assert.equal(socks.ip, 'proxy.example.test')
+  assert.equal(socks.ip, '198.51.100.10')
+  assert.equal(socks.accelerationDomain, 'proxy.example.test')
   assert.equal(socks.port, 5001)
   assert.equal(socks.username, 'public-user')
   assert.equal(socks.password, 'local-password')
   assert.match(socks.link, /^socks:\/\//)
 
   const vless = buildConnectionExportData(connection, 'vless')
-  assert.equal(vless.ip, 'proxy.example.test')
+  assert.equal(vless.ip, '198.51.100.10')
+  assert.equal(vless.accelerationDomain, 'proxy.example.test')
   assert.equal(vless.port, 20168)
   assert.equal(vless.username, structured().uuid)
   assert.equal(vless.password, '')
   assert.match(vless.link, /^vless:\/\//)
 
   const vmess = buildConnectionExportData(connection, 'vmess')
-  assert.equal(vmess.ip, 'proxy.example.test')
+  assert.equal(vmess.ip, '198.51.100.10')
+  assert.equal(vmess.accelerationDomain, 'proxy.example.test')
   assert.equal(vmess.port, 20169)
   assert.equal(vmess.username, structured().uuid)
   assert.equal(vmess.password, '')
   assert.match(vmess.link, /^vmess:\/\//)
+})
+
+test('accelerated exports fall back to the bound endpoint when source IP metadata is absent', () => {
+  const result = buildConnectionExportData({
+    protocols: ['vless'],
+    protocolInfo: structured({ ip: '', sourceIp: '' }),
+    directEndpoint: { host: '203.0.113.25', port: 9100 },
+  }, 'vless')
+
+  assert.equal(result.ip, '203.0.113.25')
+  assert.equal(result.accelerationDomain, 'proxy.example.test')
 })
 
 test('export data returns blank connection fields when a scenario is unavailable', () => {

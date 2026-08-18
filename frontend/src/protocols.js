@@ -236,6 +236,13 @@ function connectionDirectEndpoint(connection) {
   return null
 }
 
+function connectionSourceIp(connection) {
+  const structured = connection?.protocolInfo || {}
+  return value(structured, 'sourceIp')
+    || value(structured, 'ip')
+    || value(connection?.directEndpoint, 'host')
+}
+
 export function buildFingerprintAcceleration(connection) {
   const socks = connectionSocks(connection)
   if (!socks) return ''
@@ -377,19 +384,25 @@ export function buildConnectionExportData(connection, scenarioKey) {
     const endpoint = scenarioKey === 'fingerprintAcceleration'
       ? connectionSocks(connection)
       : connectionDirectEndpoint(connection)
-    return {
+    const result = {
       ip: endpoint?.host || '',
       port: endpoint?.port || '',
       username: endpoint?.username || '',
       password: endpoint?.password || '',
       link: selectedLink,
     }
+    if (scenarioKey === 'fingerprintAcceleration') {
+      result.ip = connectionSourceIp(connection)
+      result.accelerationDomain = endpoint?.host || ''
+    }
+    return result
   }
 
   if (scenarioKey === 'socksAcceleration') {
     const socks = connectionSocks(connection)
     return {
-      ip: socks?.host || '',
+      ip: connectionSourceIp(connection),
+      accelerationDomain: socks?.host || '',
       port: socks?.port || '',
       username: socks?.username || '',
       password: socks?.password || '',
@@ -402,7 +415,8 @@ export function buildConnectionExportData(connection, scenarioKey) {
     ? parseVlessEndpoint(selectedLink)
     : parseVmessEndpoint(selectedLink)
   return {
-    ip: value(structured, 'accelerationDomain') || parsed?.host || '',
+    ip: connectionSourceIp(connection),
+    accelerationDomain: value(structured, 'accelerationDomain') || parsed?.host || '',
     port: scenarioKey === 'vless'
       ? port(structured, 'vlessPort', parsed?.port || 20168)
       : port(structured, 'vmessPort', parsed?.port || 20169),
