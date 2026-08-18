@@ -94,7 +94,7 @@ const userPageRequests = new Map()
 
 const nodeForm = reactive({ name: '服务器节点', baseUrl: 'http://server:8088', token: '', maxUsers: 500 })
 const nodeSettingsForm = reactive({ enabled: true, maintenance: false, maxUsers: 500 })
-const provisionForm = reactive({ userId: '', protocols: ['vless', 'vmess', 'socks'], preferredNodeId: '', trafficLimitGb: null, maxSourceIps: null })
+const provisionForm = reactive({ userId: '', protocols: ['vless', 'vmess', 'socks'], preferredNodeId: '', trafficLimitGb: 200, maxSourceIps: 5 })
 const userForm = reactive({
   userId: '',
   protocols: ['vless', 'vmess', 'socks'],
@@ -105,8 +105,8 @@ const userForm = reactive({
   proxyPort: 1080,
   proxyUsername: '',
   proxyPassword: '',
-  trafficLimitGb: null,
-  maxSourceIps: null,
+  trafficLimitGb: 200,
+  maxSourceIps: 5,
 })
 const proxyForm = reactive({ userId: '', server: '', port: 1080, username: '', password: '' })
 const policyForm = reactive({ userId: '', trafficLimitGb: null, maxSourceIps: null })
@@ -825,7 +825,7 @@ async function registerNode() {
 
 function openProvision() {
   Object.assign(provisionForm, {
-    userId: '', protocols: ['vless', 'vmess', 'socks'], preferredNodeId: '', trafficLimitGb: null, maxSourceIps: null,
+    userId: '', protocols: ['vless', 'vmess', 'socks'], preferredNodeId: '', trafficLimitGb: 200, maxSourceIps: 5,
   })
   modal.provision = true
 }
@@ -1137,7 +1137,7 @@ function openCreateUser() {
   Object.assign(userForm, {
     userId: '', protocols: ['vless', 'vmess', 'socks'], socksUsername: '', socksPassword: '',
     useProxy: false, proxyServer: '', proxyPort: 1080, proxyUsername: '', proxyPassword: '',
-    trafficLimitGb: null, maxSourceIps: null,
+    trafficLimitGb: 200, maxSourceIps: 5,
   })
   modal.user = true
 }
@@ -2248,8 +2248,8 @@ onBeforeUnmount(() => {
           <label>指定节点管理器（可选）
             <select v-model="provisionForm.preferredNodeId"><option value="">自动选择最空闲节点</option><option v-for="node in allocatableNodes" :key="node.id" :value="node.id">{{ node.name }} · {{ node.userCount }}/{{ node.maxUsers }}</option></select>
           </label>
-          <label>流量额度（GB）<input v-model.number="provisionForm.trafficLimitGb" type="number" min="0" step="0.1" placeholder="留空不限" /></label>
-          <label>最大同时来源 IP 数<input v-model.number="provisionForm.maxSourceIps" type="number" min="0" max="1000" step="1" placeholder="留空不限" /></label>
+          <label>流量额度（GB）<input v-model.number="provisionForm.trafficLimitGb" type="number" min="0" step="0.1" placeholder="默认 200 GB" /></label>
+          <label>最大同时来源 IP 数<input v-model.number="provisionForm.maxSourceIps" type="number" min="0" max="1000" step="1" placeholder="默认 5 个设备" /></label>
         </div>
         <fieldset><legend>返回协议</legend><div class="checkbox-row"><label v-for="protocol in ['vless','vmess','socks']" :key="protocol"><input v-model="provisionForm.protocols" type="checkbox" :value="protocol" />{{ protocol.toUpperCase() }}</label></div></fieldset>
         <div class="modal-actions"><button type="button" class="button ghost" @click="modal.provision = false">取消</button><button class="button primary icon-text" :disabled="loading.action || provisionForm.protocols.length === 0"><Plus :size="15" />生成节点</button></div>
@@ -2270,7 +2270,7 @@ onBeforeUnmount(() => {
     <div v-if="modal.user" class="modal-backdrop" @mousedown.self="closeUserModal">
       <form class="modal-card wide-card" @submit.prevent="createUser">
         <div class="modal-heading"><div><p class="eyebrow">手动创建用户</p><h2>手动创建节点用户</h2></div><button type="button" class="close-button" title="关闭" @click="closeUserModal"><X :size="17" /></button></div>
-        <div class="form-grid"><label>用户 ID<input v-model.trim="userForm.userId" required pattern="[A-Za-z0-9._-]+" /></label><label>SOCKS 用户名（可选）<input v-model.trim="userForm.socksUsername" autocomplete="off" /></label><label>SOCKS 密码（可选）<input v-model="userForm.socksPassword" type="password" autocomplete="new-password" /></label><label>流量额度（GB）<input v-model.number="userForm.trafficLimitGb" type="number" min="0" step="0.1" placeholder="留空不限" /></label><label>最大同时来源 IP 数<input v-model.number="userForm.maxSourceIps" type="number" min="0" max="1000" step="1" placeholder="留空不限" /></label></div>
+        <div class="form-grid"><label>用户 ID<input v-model.trim="userForm.userId" required pattern="[A-Za-z0-9._-]+" /></label><label>SOCKS 用户名（可选）<input v-model.trim="userForm.socksUsername" autocomplete="off" /></label><label>SOCKS 密码（可选）<input v-model="userForm.socksPassword" type="password" autocomplete="new-password" /></label><label>流量额度（GB）<input v-model.number="userForm.trafficLimitGb" type="number" min="0" step="0.1" placeholder="默认 200 GB" /></label><label>最大同时来源 IP 数<input v-model.number="userForm.maxSourceIps" type="number" min="0" max="1000" step="1" placeholder="默认 5 个设备" /></label></div>
         <fieldset><legend>启用协议</legend><div class="checkbox-row"><label v-for="protocol in ['vless','vmess','socks']" :key="protocol"><input v-model="userForm.protocols" type="checkbox" :value="protocol" />{{ protocol.toUpperCase() }}</label></div></fieldset>
         <label class="toggle-row"><input v-model="userForm.useProxy" type="checkbox" /><span>创建时绑定住宅 SOCKS5 出口</span></label>
         <div v-if="userForm.useProxy" class="form-grid proxy-grid"><label>代理服务器<input v-model.trim="userForm.proxyServer" required /></label><label>端口<input v-model.number="userForm.proxyPort" type="number" min="1" max="65535" required /></label><label>用户名<input v-model.trim="userForm.proxyUsername" required autocomplete="off" /></label><label>密码<input v-model="userForm.proxyPassword" required type="password" autocomplete="new-password" /></label></div>

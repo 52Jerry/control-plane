@@ -2,10 +2,13 @@ package com.example.nodecontrol.service;
 
 import com.example.nodecontrol.client.NodeManagerClient;
 import com.example.nodecontrol.client.RemoteNodeException;
+import com.example.nodecontrol.config.ControlPlaneProperties;
 import com.example.nodecontrol.domain.ManagedNode;
 import com.example.nodecontrol.domain.ResidentialAllocation;
 import com.example.nodecontrol.domain.ResidentialAllocationRepository;
 import com.example.nodecontrol.dto.ControlPlaneModels.BatchConnectionResult;
+import com.example.nodecontrol.dto.ControlPlaneModels.UserPolicyMigrationFailure;
+import com.example.nodecontrol.dto.ControlPlaneModels.UserPolicyMigrationResponse;
 import com.example.nodecontrol.dto.RemoteModels.BindProxyRequest;
 import com.example.nodecontrol.dto.RemoteModels.CreateUserRequest;
 import com.example.nodecontrol.dto.RemoteModels.CreateUserResponse;
@@ -49,6 +52,7 @@ public class NodeUserService {
     private final ProvisioningService provisioningService;
     private final IpCountryResolver ipCountryResolver;
     private final AuditLogService auditLogService;
+    private final ControlPlaneProperties properties;
 
     private static final List<String> ACTIVE_ALLOCATION_STATES =
             List.of("PROVISIONING", "RETRYABLE", "ACTIVE");
@@ -64,7 +68,19 @@ public class NodeUserService {
                            RemoteOperationService operationService,
                            ResidentialAllocationRepository allocationRepository,
                            ProvisioningService provisioningService) {
-        this(nodeService, client, operationService, allocationRepository, provisioningService, null, null);
+        this(nodeService, client, operationService, allocationRepository, provisioningService,
+                new ControlPlaneProperties(), null, null);
+    }
+
+    public NodeUserService(ManagedNodeService nodeService,
+                           NodeManagerClient client,
+                           RemoteOperationService operationService,
+                           ResidentialAllocationRepository allocationRepository,
+                           ProvisioningService provisioningService,
+                           IpCountryResolver ipCountryResolver,
+                           AuditLogService auditLogService) {
+        this(nodeService, client, operationService, allocationRepository, provisioningService,
+                new ControlPlaneProperties(), ipCountryResolver, auditLogService);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -73,6 +89,7 @@ public class NodeUserService {
                            RemoteOperationService operationService,
                            ResidentialAllocationRepository allocationRepository,
                            ProvisioningService provisioningService,
+                           ControlPlaneProperties properties,
                            IpCountryResolver ipCountryResolver,
                            AuditLogService auditLogService) {
         this.nodeService = nodeService;
@@ -80,6 +97,7 @@ public class NodeUserService {
         this.operationService = operationService;
         this.allocationRepository = allocationRepository;
         this.provisioningService = provisioningService;
+        this.properties = properties;
         this.ipCountryResolver = ipCountryResolver;
         this.auditLogService = auditLogService;
     }
@@ -378,7 +396,7 @@ public class NodeUserService {
 
     public CreateUserResponse createUser(UUID nodeId, CreateUserRequest request, String idempotencyKey, UUID actorUserId) {
         ManagedNode node = nodeService.getNode(nodeId);
-        CreateUserRequest effectiveRequest = withProxyCredentials(request);
+        CreateUserRequest effectiveRequest = withDefaultPolicy(withProxyCredentials(request));
         provisioningService.ensureUserIdAvailableOnNode(node, effectiveRequest.userId());
         String key = idempotencyKey == null || idempotencyKey.isBlank() ? UUID.randomUUID().toString() : idempotencyKey.trim();
         CreateUserResponse response = operationService.execute(
@@ -403,6 +421,18 @@ public class NodeUserService {
                 request.trafficLimitBytes(), request.maxSourceIps());
     }
 
+    private CreateUserRequest withDefaultPolicy(CreateUserRequest request) {
+        ControlPlaneProperties.Provisioning defaults = properties.getProvisioning();
+        return new CreateUserRequest(
+                request.userId(), request.protocols(), request.socksUsername(), request.socksPassword(), request.proxy(),
+                request.trafficLimitBytes() == null
+                        ? defaults.getDefaultTrafficLimitBytes()
+                        : request.trafficLimitBytes(),
+                request.maxSourceIps() == null
+                        ? defaults.getDefaultMaxSourceIps()
+                        : request.maxSourceIps());
+    }
+
     public UserPolicyResponse updatePolicy(UUID nodeId,
                                            String userId,
                                            UpdateUserPolicyRequest request,
@@ -411,15 +441,56 @@ public class NodeUserService {
         UserPolicyResponse response = client.updateUserPolicy(node, userId, request);
         if (response != null && response.success()) {
             invalidateUserSnapshots(nodeId);
-            allocationRepository.findAllByNodeIdAndControlUserIdAndStateIn(
-                            nodeId, userId, ACTIVE_ALLOCATION_STATES)
-                    .forEach(allocation -> {
-                        allocation.setUserPolicy(response.trafficLimitBytes(), response.maxSourceIps());
-                        allocationRepository.save(allocation);
-                    });
+            syncAllocationPolicy(nodeId, userId, response);
         }
         audit("USER_POLICY_UPDATED", actorUserId, nodeId, userId, "更新节点用户限制策略");
         return response;
+    }
+
+    public UserPolicyMigrationResponse migrateAllUsersToDefaultPolicy(UUID nodeId, UUID actorUserId) {
+        ManagedNode node = nodeService.getNode(nodeId);
+        ControlPlaneProperties.Provisioning defaults = properties.getProvisioning();
+        UpdateUserPolicyRequest request = new UpdateUserPolicyRequest(
+                defaults.getDefaultTrafficLimitBytes(), defaults.getDefaultMaxSourceIps());
+        List<UserSummary> users = scanAllUsers(node, null);
+        List<UserPolicyMigrationFailure> failures = new ArrayList<>();
+        int succeeded = 0;
+        for (UserSummary user : users) {
+            try {
+                UserPolicyResponse response = client.updateUserPolicy(node, user.userId(), request);
+                if (response == null || !response.success()) {
+                    failures.add(new UserPolicyMigrationFailure(user.userId(), "节点未确认策略更新成功"));
+                    continue;
+                }
+                syncAllocationPolicy(nodeId, user.userId(), response);
+                succeeded++;
+            } catch (RuntimeException exception) {
+                failures.add(new UserPolicyMigrationFailure(
+                        user.userId(), sanitizeMigrationError(exception.getMessage())));
+            }
+        }
+        invalidateUserSnapshots(nodeId);
+        audit("USER_POLICY_DEFAULTS_MIGRATED", actorUserId, nodeId, null,
+                "批量更新用户限制策略：成功 " + succeeded + "，失败 " + failures.size());
+        return new UserPolicyMigrationResponse(
+                nodeId, node.getName(), users.size(), succeeded, failures.size(),
+                defaults.getDefaultTrafficLimitBytes(), defaults.getDefaultMaxSourceIps(), List.copyOf(failures));
+    }
+
+    private void syncAllocationPolicy(UUID nodeId, String userId, UserPolicyResponse response) {
+        allocationRepository.findAllByNodeIdAndControlUserIdAndStateIn(
+                        nodeId, userId, ACTIVE_ALLOCATION_STATES)
+                .forEach(allocation -> {
+                    allocation.setUserPolicy(response.trafficLimitBytes(), response.maxSourceIps());
+                    allocationRepository.save(allocation);
+                });
+    }
+
+    private String sanitizeMigrationError(String message) {
+        if (message == null || message.isBlank()) {
+            return "节点策略更新失败";
+        }
+        return message.length() > 500 ? message.substring(0, 500) : message;
     }
 
     public UserConnection getConnections(UUID nodeId, String userId) {

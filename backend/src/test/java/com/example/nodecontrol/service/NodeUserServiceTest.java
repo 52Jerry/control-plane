@@ -176,6 +176,28 @@ class NodeUserServiceTest {
         verify(client).createUser(eq(node), captor.capture(), eq("create-user"));
         assertThat(captor.getValue().socksUsername()).isEqualTo("ip-user");
         assertThat(captor.getValue().socksPassword()).isEqualTo("ip-password");
+        assertThat(captor.getValue().trafficLimitBytes()).isEqualTo(200L * 1024 * 1024 * 1024);
+        assertThat(captor.getValue().maxSourceIps()).isEqualTo(5);
+    }
+
+    @Test
+    void createUserKeepsExplicitPolicyInsteadOfReplacingItWithDefaults() {
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(5)).get())
+                .when(operationService)
+                .execute(any(), anyString(), anyString(), any(), eq(CreateUserResponse.class), any());
+        when(client.createUser(eq(node), any(CreateUserRequest.class), eq("create-custom-policy")))
+                .thenReturn(new CreateUserResponse(
+                        true, "alice", UUID.randomUUID().toString(), List.of("socks"),
+                        null, null, new SocksConnection("node.example", 5001, "alice", "secret"), false));
+        CreateUserRequest request = new CreateUserRequest(
+                "alice", List.of("socks"), null, null, null, 10L * 1024 * 1024 * 1024, 2);
+
+        service.createUser(nodeId, request, "create-custom-policy");
+
+        ArgumentCaptor<CreateUserRequest> captor = ArgumentCaptor.forClass(CreateUserRequest.class);
+        verify(client).createUser(eq(node), captor.capture(), eq("create-custom-policy"));
+        assertThat(captor.getValue().trafficLimitBytes()).isEqualTo(10L * 1024 * 1024 * 1024);
+        assertThat(captor.getValue().maxSourceIps()).isEqualTo(2);
     }
 
     @Test
@@ -381,6 +403,34 @@ class NodeUserServiceTest {
         verify(allocationRepository, never()).findAllByNodeIdAndControlUserIdAndStateIn(
                 any(), anyString(), any());
         verify(allocationRepository, never()).save(any());
+    }
+
+    @Test
+    void policyMigrationContinuesAfterFailureAndSyncsSuccessfulAllocations() {
+        ResidentialAllocation aliceAllocation = activeAllocation("alice");
+        when(client.getUsers(node, 1, 100, null)).thenReturn(new UserPage(
+                List.of(userSummary("alice"), userSummary("bob")), 1, 100, 2));
+        UpdateUserPolicyRequest defaults = new UpdateUserPolicyRequest(
+                200L * 1024 * 1024 * 1024, 5);
+        when(client.updateUserPolicy(node, "alice", defaults)).thenReturn(
+                new UserPolicyResponse(true, "alice", defaults.trafficLimitBytes(), defaults.maxSourceIps()));
+        when(client.updateUserPolicy(node, "bob", defaults))
+                .thenThrow(new RemoteNodeException(502, "temporary timeout"));
+        when(allocationRepository.findAllByNodeIdAndControlUserIdAndStateIn(
+                eq(nodeId), eq("alice"), any())).thenReturn(List.of(aliceAllocation));
+
+        var result = service.migrateAllUsersToDefaultPolicy(nodeId, null);
+
+        assertThat(result.total()).isEqualTo(2);
+        assertThat(result.succeeded()).isEqualTo(1);
+        assertThat(result.failed()).isEqualTo(1);
+        assertThat(result.failures()).singleElement().satisfies(failure -> {
+            assertThat(failure.userId()).isEqualTo("bob");
+            assertThat(failure.message()).contains("temporary timeout");
+        });
+        assertThat(aliceAllocation.getTrafficLimitBytes()).isEqualTo(defaults.trafficLimitBytes());
+        assertThat(aliceAllocation.getMaxSourceIps()).isEqualTo(5);
+        verify(allocationRepository).save(aliceAllocation);
     }
 
     @Test

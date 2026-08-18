@@ -131,6 +131,24 @@ class ProvisioningServiceIntegrationTest {
     }
 
     @Test
+    void directProvisionUsesDefaultPolicyWhenLimitsAreMissing() {
+        saveOnlineNode("node-default-policy", 10);
+        when(nodeManagerClient.createUser(any(), any(), any()))
+                .thenReturn(successResponse("default-user"));
+
+        provisioningService.provision("default-policy-order", new ProvisionRequest(
+                "default-user", List.of("vless", "vmess", "socks"), null));
+
+        ArgumentCaptor<CreateUserRequest> requestCaptor = ArgumentCaptor.forClass(CreateUserRequest.class);
+        verify(nodeManagerClient).createUser(any(), requestCaptor.capture(), any());
+        assertThat(requestCaptor.getValue().trafficLimitBytes()).isEqualTo(200L * 1024 * 1024 * 1024);
+        assertThat(requestCaptor.getValue().maxSourceIps()).isEqualTo(5);
+        ResidentialAllocation stored = allocationRepository.findByRequestKey("default-policy-order").orElseThrow();
+        assertThat(stored.getTrafficLimitBytes()).isEqualTo(200L * 1024 * 1024 * 1024);
+        assertThat(stored.getMaxSourceIps()).isEqualTo(5);
+    }
+
+    @Test
     void definitiveRemoteFailureReleasesTheSelectedNode() {
         saveOnlineNode("node-a", 10);
         when(nodeManagerClient.createUser(any(), any(), any()))
@@ -336,6 +354,10 @@ class ProvisioningServiceIntegrationTest {
         assertThat(requestCaptor.getAllValues().get(0).userId()).isEqualTo("user-a");
         assertThat(requestCaptor.getAllValues().get(0).protocols())
                 .containsExactly("vless", "vmess", "socks");
+        assertThat(requestCaptor.getAllValues()).allSatisfy(request -> {
+            assertThat(request.trafficLimitBytes()).isEqualTo(200L * 1024 * 1024 * 1024);
+            assertThat(request.maxSourceIps()).isEqualTo(5);
+        });
         assertThat(requestCaptor.getAllValues().get(1).proxy().server()).isEqualTo("198.51.100.11");
         assertThat(requestCaptor.getAllValues().get(1).proxy().port()).isEqualTo(1081);
         assertThat(requestCaptor.getAllValues().get(1).userId()).isEqualTo("user-b");

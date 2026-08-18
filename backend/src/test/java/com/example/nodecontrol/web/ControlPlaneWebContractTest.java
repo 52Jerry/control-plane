@@ -6,6 +6,7 @@ import com.example.nodecontrol.dto.ControlPlaneModels.NodeTokenResponse;
 import com.example.nodecontrol.dto.ControlPlaneModels.NodeView;
 import com.example.nodecontrol.dto.ControlPlaneModels.ProxyProvisionBatchResponse;
 import com.example.nodecontrol.dto.ControlPlaneModels.BatchConnectionResult;
+import com.example.nodecontrol.dto.ControlPlaneModels.UserPolicyMigrationResponse;
 import com.example.nodecontrol.dto.RemoteModels.OperationResponse;
 import com.example.nodecontrol.dto.RemoteModels.SocksConnection;
 import com.example.nodecontrol.dto.RemoteModels.UpdateUserPolicyRequest;
@@ -598,6 +599,29 @@ class ControlPlaneWebContractTest {
                         .cookie(readonly)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"userIds\":[\"user-1\"]}"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void defaultPolicyMigrationIsAdminOnlyAndNotCached() throws Exception {
+        UUID nodeId = UUID.randomUUID();
+        when(nodeUserService.migrateAllUsersToDefaultPolicy(nodeId, null)).thenReturn(
+                new UserPolicyMigrationResponse(
+                        nodeId, "Node A", 2, 2, 0,
+                        200L * 1024 * 1024 * 1024, 5, List.of()));
+
+        mockMvc.perform(post("/api/control/user-policy-migrations/nodes/{nodeId}/defaults", nodeId)
+                        .header("X-Control-Token", "admin-secret"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.total").value(2))
+                .andExpect(jsonPath("$.succeeded").value(2))
+                .andExpect(jsonPath("$.trafficLimitBytes").value(214748364800L))
+                .andExpect(jsonPath("$.maxSourceIps").value(5));
+
+        Cookie nodeOps = createRoleAccount("NODE_OPS");
+        mockMvc.perform(post("/api/control/user-policy-migrations/nodes/{nodeId}/defaults", nodeId)
+                        .cookie(nodeOps))
                 .andExpect(status().isForbidden());
     }
 

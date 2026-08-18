@@ -150,8 +150,8 @@ public class ProvisioningService {
                         row.sourceIp(),
                         row.sourceAddress(),
                         country.code(), country.name(), null);
-                ProvisionRequest provisionRequest = new ProvisionRequest(
-                        userId, RESIDENTIAL_PROTOCOLS, request.preferredNodeId());
+                ProvisionRequest provisionRequest = withDefaultPolicy(new ProvisionRequest(
+                        userId, RESIDENTIAL_PROTOCOLS, request.preferredNodeId()));
                 ProxyRequestHash hashInput = new ProxyRequestHash(
                         provisionRequest, row.sourceIp(), row.sourceAddress(), proxy);
                 ResidentialAllocation allocation = createOrLoadProxy(
@@ -1348,8 +1348,21 @@ public class ProvisioningService {
         } else {
             userId = normalizeNodeUserId(userId, "用户 ID");
         }
-        return new ProvisionRequest(userId, request.protocols(), request.preferredNodeId(),
-                request.trafficLimitBytes(), request.maxSourceIps());
+        return withDefaultPolicy(new ProvisionRequest(
+                userId, request.protocols(), request.preferredNodeId(),
+                request.trafficLimitBytes(), request.maxSourceIps()));
+    }
+
+    private ProvisionRequest withDefaultPolicy(ProvisionRequest request) {
+        ControlPlaneProperties.Provisioning defaults = properties.getProvisioning();
+        Long trafficLimitBytes = request.trafficLimitBytes() == null
+                ? defaults.getDefaultTrafficLimitBytes()
+                : request.trafficLimitBytes();
+        Integer maxSourceIps = request.maxSourceIps() == null
+                ? defaults.getDefaultMaxSourceIps()
+                : request.maxSourceIps();
+        return new ProvisionRequest(request.userId(), request.protocols(), request.preferredNodeId(),
+                trafficLimitBytes, maxSourceIps);
     }
 
     private String normalizeBatchUserId(String username, String batchKey, int rowNumber) {

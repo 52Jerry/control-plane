@@ -258,6 +258,24 @@ public final class ControlPlaneModels {
     ) {
     }
 
+    public record UserPolicyMigrationFailure(
+            String userId,
+            String message
+    ) {
+    }
+
+    public record UserPolicyMigrationResponse(
+            UUID nodeId,
+            String nodeName,
+            int total,
+            int succeeded,
+            int failed,
+            long trafficLimitBytes,
+            int maxSourceIps,
+            List<UserPolicyMigrationFailure> failures
+    ) {
+    }
+
     public record ProxyProvisionBatchResponse(
             int total,
             int succeeded,
