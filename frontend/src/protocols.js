@@ -342,37 +342,6 @@ export function buildConnectionLinks(connection) {
   return links
 }
 
-function parseVlessEndpoint(link) {
-  try {
-    const parsed = new URL(link)
-    return {
-      host: parsed.hostname,
-      port: Number(parsed.port) || '',
-      username: decodeURIComponent(parsed.username),
-      password: '',
-    }
-  } catch {
-    return null
-  }
-}
-
-function parseVmessEndpoint(link) {
-  try {
-    const encoded = String(link || '').replace(/^vmess:\/\//, '')
-    const binary = atob(encoded)
-    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0))
-    const config = JSON.parse(new TextDecoder().decode(bytes))
-    return {
-      host: config.add || '',
-      port: Number(config.port) || '',
-      username: config.id || '',
-      password: '',
-    }
-  } catch {
-    return null
-  }
-}
-
 export function buildConnectionExportData(connection, scenarioKey) {
   const selectedLink = buildConnectionLinks(connection)
     .find((item) => item.key === scenarioKey)?.value || ''
@@ -411,17 +380,13 @@ export function buildConnectionExportData(connection, scenarioKey) {
   }
 
   const structured = connection?.protocolInfo || {}
-  const parsed = scenarioKey === 'vless'
-    ? parseVlessEndpoint(selectedLink)
-    : parseVmessEndpoint(selectedLink)
+  const socks = connectionSocks(connection)
   return {
     ip: connectionSourceIp(connection),
-    accelerationDomain: value(structured, 'accelerationDomain') || parsed?.host || '',
-    port: scenarioKey === 'vless'
-      ? port(structured, 'vlessPort', parsed?.port || 20168)
-      : port(structured, 'vmessPort', parsed?.port || 20169),
-    username: value(structured, 'uuid') || parsed?.username || '',
-    password: '',
+    accelerationDomain: socks?.host || value(structured, 'accelerationDomain'),
+    port: socks?.port || '',
+    username: socks?.username || '',
+    password: socks?.password || '',
     link: selectedLink,
   }
 }

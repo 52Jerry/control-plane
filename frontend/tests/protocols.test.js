@@ -392,18 +392,38 @@ test('export data maps original and accelerated credentials consistently', () =>
   const vless = buildConnectionExportData(connection, 'vless')
   assert.equal(vless.ip, '198.51.100.10')
   assert.equal(vless.accelerationDomain, 'proxy.example.test')
-  assert.equal(vless.port, 20168)
-  assert.equal(vless.username, structured().uuid)
-  assert.equal(vless.password, '')
+  assert.equal(vless.port, 5001)
+  assert.equal(vless.username, 'public-user')
+  assert.equal(vless.password, 'local-password')
   assert.match(vless.link, /^vless:\/\//)
 
   const vmess = buildConnectionExportData(connection, 'vmess')
   assert.equal(vmess.ip, '198.51.100.10')
   assert.equal(vmess.accelerationDomain, 'proxy.example.test')
-  assert.equal(vmess.port, 20169)
-  assert.equal(vmess.username, structured().uuid)
-  assert.equal(vmess.password, '')
+  assert.equal(vmess.port, 5001)
+  assert.equal(vmess.username, 'public-user')
+  assert.equal(vmess.password, 'local-password')
   assert.match(vmess.link, /^vmess:\/\//)
+})
+
+test('all acceleration exports include fingerprint-browser SOCKS fields', () => {
+  const connection = {
+    protocols: ['vless', 'vmess', 'socks'],
+    protocolInfo: structured({
+      sourceIp: '130.12.58.101',
+      accelerationDomain: 'proxy.xinxinip.com',
+      username: 'NGFFfVYudUWp',
+      password: '5GPeTca0LXsN',
+    }),
+  }
+
+  for (const scenario of ['vless', 'socksAcceleration', 'vmess', 'fingerprintAcceleration']) {
+    const result = buildConnectionExportData(connection, scenario)
+    assert.deepEqual(
+      [result.ip, result.accelerationDomain, result.port, result.username, result.password],
+      ['130.12.58.101', 'proxy.xinxinip.com', 5001, 'NGFFfVYudUWp', '5GPeTca0LXsN'],
+    )
+  }
 })
 
 test('accelerated exports fall back to the bound endpoint when source IP metadata is absent', () => {
