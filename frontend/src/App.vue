@@ -600,30 +600,59 @@ async function loadAll() {
   await Promise.all([loadUsers(), loadAllocations(), loadAuditLogs()])
 }
 
+function loadInBackground(promise, label) {
+  promise.catch((error) => {
+    if (error.status !== 401) notify(`${label}加载失败：${errorMessage(error)}`, 'error')
+  })
+}
+
+function loadInitialData() {
+  loadInBackground(
+    api.defaultUserPolicy().then((policy) => { defaultUserPolicy.value = policy }),
+    '默认用户策略',
+  )
+  loadInBackground(loadAllocations(), '自动生成记录')
+  loadInBackground(loadAuditLogs(), '审计日志')
+  loadInBackground(
+    loadNodes({ awaitDashboard: false }).then(() => loadUsers()),
+    '节点数据',
+  )
+}
+
 async function bootstrap() {
   loading.app = true
+  let authenticated = false
   try {
-    meta.value = await api.meta()
+    meta.value = await withRequestTimeout(
+      (signal) => api.meta({ signal }),
+      8000,
+      '连接控制中心超时，请检查服务状态或网络连接',
+    )
     if (meta.value.authRequired) {
       if (!meta.value.passwordLoginEnabled) {
         requireLogin('后端尚未配置管理账号密码，请设置登录环境变量并重启服务。')
         return
       }
-      const session = await api.session()
+      const session = await withRequestTimeout(
+        (signal) => api.session({ signal }),
+        8000,
+        '验证登录状态超时，请检查服务状态或网络连接',
+      )
       if (!session.authenticated) {
         requireLogin()
         return
       }
-    sessionUsername.value = session.username || ''
-    sessionRole.value = session.role || 'ADMIN'
+      sessionUsername.value = session.username || ''
+      sessionRole.value = session.role || 'ADMIN'
     }
-    await loadAll()
+    authenticated = true
   } catch (error) {
     if (error.status === 401) requireLogin()
     else notify(errorMessage(error), 'error')
   } finally {
     loading.app = false
   }
+  if (authenticated) loadInitialData()
 }
 
 async function login() {
@@ -648,11 +677,7 @@ async function login() {
     loading.action = false
   }
 
-  try {
-    await loadAll()
-  } catch (error) {
-    if (error.status !== 401) notify(`登录成功，但节点数据读取失败：${errorMessage(error)}`, 'error')
-  }
+  loadInitialData()
 }
 
 async function logout() {
@@ -1416,7 +1441,7 @@ function handleImportFile(event) {
   importResult.value = null
 }
 
-async function withExportRequestTimeout(requestFactory, timeoutMs, timeoutMessage) {
+async function withRequestTimeout(requestFactory, timeoutMs, timeoutMessage) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -1430,7 +1455,7 @@ async function withExportRequestTimeout(requestFactory, timeoutMs, timeoutMessag
 }
 
 async function loadUsersForExport(nodeId) {
-  return await withExportRequestTimeout((signal) => api.usersForExport(nodeId, {
+  return await withRequestTimeout((signal) => api.usersForExport(nodeId, {
     keyword: userPage.keyword.trim(),
     ip: userPage.ip.trim(),
     sort: userPage.sort,

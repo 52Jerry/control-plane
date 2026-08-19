@@ -40,9 +40,9 @@ function operationHeaders(prefix) {
 }
 
 export const api = {
-  meta: () => request('/api/control/meta'),
+  meta: (options = {}) => request('/api/control/meta', options),
   defaultUserPolicy: () => request('/api/control/settings/default-user-policy'),
-  session: () => request('/api/control/auth/session'),
+  session: (options = {}) => request('/api/control/auth/session', options),
   login: (payload) => request('/api/control/auth/login', { method: 'POST', body: JSON.stringify(payload) }),
   logout: () => request('/api/control/auth/logout', { method: 'POST' }),
   controlAccounts: () => request('/api/control/accounts'),
