@@ -1,4 +1,40 @@
 const requiredHeaders = ['序号', 'IP', '连接端口', '连接账号', '连接密码']
+const EXPORT_TIME_ZONE = 'Asia/Shanghai'
+
+function dateParts(value) {
+  if (!value) return null
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: EXPORT_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date)
+  const result = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return {
+    year: Number(result.year),
+    month: Number(result.month),
+    day: Number(result.day),
+  }
+}
+
+function formatUtcDate(date) {
+  const pad = (value) => String(value).padStart(2, '0')
+  return `${date.getUTCFullYear()}/${pad(date.getUTCMonth() + 1)}/${pad(date.getUTCDate())}`
+}
+
+export function exportSubscriptionDates(createdAt, validDays = 30) {
+  const purchase = dateParts(createdAt)
+  if (!purchase) return { purchaseDate: '', expirationDate: '' }
+  const purchaseDate = new Date(Date.UTC(purchase.year, purchase.month - 1, purchase.day))
+  const expirationDate = new Date(purchaseDate)
+  expirationDate.setUTCDate(expirationDate.getUTCDate() + validDays)
+  return {
+    purchaseDate: formatUtcDate(purchaseDate),
+    expirationDate: formatUtcDate(expirationDate),
+  }
+}
 
 export function normalizeSequenceRange(start, end, total = null) {
   const from = Number(start === '' || start === null || start === undefined ? 1 : start)

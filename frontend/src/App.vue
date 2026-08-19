@@ -17,6 +17,7 @@ import {
   chunkRows,
   connectionLookupKey,
   distributeRowsRoundRobin,
+  exportSubscriptionDates,
   filterImportedRowsBySequence,
   parseExcelTransferTables,
   proxyInputFromRows,
@@ -1581,7 +1582,7 @@ async function exportNodeUsers() {
         sequence: item.sequence,
         nodeName: item.node.name,
         ...connectionData,
-        createdAt: item.user.createdAt,
+        ...exportSubscriptionDates(item.user.createdAt),
       }
     })
 
@@ -1630,7 +1631,8 @@ async function exportNodeUsers() {
       { header: '连接密码', key: 'password', width: 24 },
       { header: '代理链接', key: 'link', width: 80 },
       { header: '二维码标签', key: 'qr', width: 18 },
-      { header: '创建时间', key: 'createdAt', width: 24 },
+      { header: '购买时间', key: 'purchaseDate', width: 15 },
+      { header: '到期时间', key: 'expirationDate', width: 15 },
     ]
     const header = worksheet.getRow(1)
     header.height = 25
@@ -1652,7 +1654,8 @@ async function exportNodeUsers() {
         password: rowData.password,
         link: rowData.link,
         qr: rowData.link ? scenario.label : '',
-        createdAt: formatDate(rowData.createdAt),
+        purchaseDate: rowData.purchaseDate,
+        expirationDate: rowData.expirationDate,
       })
       excelRow.height = rowData.link ? 76 : 25
       excelRow.alignment = { vertical: 'middle', wrapText: true }
@@ -2357,7 +2360,7 @@ onBeforeUnmount(() => {
           <small>{{ importForm.fileName || '请选择 .xlsx 文件' }}</small>
         </label>
 
-        <p v-if="excelMode === 'export'" class="form-note">Excel 包含序号、IP、连接端口、连接账号、连接密码、代理链接、可扫描二维码和创建时间；VLESS、SOCKS、VMess、指纹加速会在 IP 后增加“加速地址”列，并导出可直接填写到指纹浏览器的加速地址、端口、账号和密码。多节点导出时增加“节点”列；没有所选场景连接的用户仍会保留，连接字段为空。</p>
+        <p v-if="excelMode === 'export'" class="form-note">Excel 包含序号、IP、连接端口、连接账号、连接密码、代理链接、可扫描二维码、购买时间和到期时间；到期时间默认为购买时间后 30 天。VLESS、SOCKS、VMess、指纹加速会在 IP 后增加“加速地址”列，并导出可直接填写到指纹浏览器的加速地址、端口、账号和密码。多节点导出时增加“节点”列；没有所选场景连接的用户仍会保留，连接字段为空。</p>
         <p v-else class="form-note">导入读取“序号、IP、连接端口、连接账号、连接密码”。建议导入由“指纹浏览器 IP 直连”场景导出的文件；重复的连接账号仍会按原账号作为节点用户 ID，目标节点已有同名用户时该条会失败。</p>
         <div v-if="exportingUsers" class="export-progress">
           <div><span>{{ exportProgress.stage }}</span><strong>{{ exportProgress.current }} / {{ exportProgress.total || '...' }}</strong></div>

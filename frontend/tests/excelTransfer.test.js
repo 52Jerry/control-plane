@@ -5,6 +5,7 @@ import {
   chunkRows,
   connectionLookupKey,
   distributeRowsRoundRobin,
+  exportSubscriptionDates,
   filterImportedRowsBySequence,
   normalizeSequenceRange,
   parseExcelTransferTables,
@@ -12,6 +13,21 @@ import {
   selectedRowsForExport,
   selectSequenceRange,
 } from '../src/excelTransfer.js'
+
+test('export dates use China purchase date and expire after 30 days', () => {
+  assert.deepEqual(exportSubscriptionDates('2026-08-19T08:30:00Z'), {
+    purchaseDate: '2026/08/19',
+    expirationDate: '2026/09/18',
+  })
+  assert.deepEqual(exportSubscriptionDates('2026-08-18T16:30:00Z'), {
+    purchaseDate: '2026/08/19',
+    expirationDate: '2026/09/18',
+  })
+  assert.deepEqual(exportSubscriptionDates(null), {
+    purchaseDate: '',
+    expirationDate: '',
+  })
+})
 
 test('sequence ranges support open ends and clamp export ranges to the available rows', () => {
   assert.deepEqual(normalizeSequenceRange(2, '', 5), { from: 2, to: 5 })
