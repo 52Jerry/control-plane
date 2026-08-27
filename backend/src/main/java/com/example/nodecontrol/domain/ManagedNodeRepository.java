@@ -15,8 +15,14 @@ public interface ManagedNodeRepository extends JpaRepository<ManagedNode, UUID> 
 
     Optional<ManagedNode> findByRemoteNodeId(String remoteNodeId);
 
+    List<ManagedNode> findByHost(String host);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select node from ManagedNode node where node.enabled = true and node.maintenance = false and node.status in ('online', 'degraded') order by node.userCount asc, node.cpu asc, node.connections asc")
     List<ManagedNode> findAllocatableNodesForUpdate();
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select node from ManagedNode node where node.id = :id")
+    Optional<ManagedNode> findByIdForUpdate(UUID id);
 }
 

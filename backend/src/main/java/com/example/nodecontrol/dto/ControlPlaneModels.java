@@ -101,7 +101,7 @@ public final class ControlPlaneModels {
             @NotBlank(message = "API 地址不能为空")
             @Size(max = 500, message = "API 地址不能超过 500 个字符") String baseUrl,
             @NotBlank(message = "访问令牌不能为空")
-            @Size(max = 1024, message = "访问令牌不能超过 1024 个字符") String token,
+            @Size(max = 2048, message = "访问令牌不能超过 2048 个字符") String token,
             @Min(value = 1, message = "最大用户数不能小于 1")
             @Max(value = 100000, message = "最大用户数不能超过 100000") Integer maxUsers
     ) {
@@ -118,7 +118,7 @@ public final class ControlPlaneModels {
             @NotBlank(message = "API 地址不能为空")
             @Size(max = 500, message = "API 地址不能超过 500 个字符") String baseUrl,
             @NotBlank(message = "访问令牌不能为空")
-            @Size(max = 1024, message = "访问令牌不能超过 1024 个字符") String apiToken,
+            @Size(max = 2048, message = "访问令牌不能超过 2048 个字符") String apiToken,
             @Size(max = 255, message = "主机信息不能超过 255 个字符") String host,
             @Size(max = 64, message = "节点管理器版本不能超过 64 个字符") String managerVersion,
             @Min(value = 1, message = "最大用户数不能小于 1")
@@ -218,12 +218,12 @@ public final class ControlPlaneModels {
 
     public record ProvisionRequest(
             @Size(max = 64, message = "用户 ID 不能超过 64 个字符")
-            @Pattern(regexp = "^[A-Za-z0-9._-]*$", message = "用户 ID 只能包含字母、数字、点、下划线和短横线") String userId,
+            @Pattern(regexp = "^[A-Za-z0-9._-]+$", message = "用户 ID 只能包含字母、数字、点、下划线和短横线") String userId,
             @NotEmpty(message = "至少选择一种协议")
             List<@Pattern(regexp = "vless|vmess|socks", message = "协议只支持 VLESS、VMess 或 SOCKS") String> protocols,
             UUID preferredNodeId,
-            @Min(value = 0, message = "流量额度不能小于 0") Long trafficLimitBytes,
-            @Min(value = 0, message = "最大来源 IP 数不能小于 0")
+            @Min(value = 1, message = "流量额度不能小于 1") Long trafficLimitBytes,
+            @Min(value = 1, message = "最大来源 IP 数不能小于 1")
             @Max(value = 1000, message = "最大来源 IP 数不能超过 1000") Integer maxSourceIps
     ) {
         public ProvisionRequest(String userId, List<String> protocols, UUID preferredNodeId) {

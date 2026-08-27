@@ -275,6 +275,68 @@ class ProvisioningServiceIntegrationTest {
     }
 
     @Test
+    void sameNodeRejectsDuplicateSourceIpWhileOtherNodesStillAccept() {
+        ManagedNode nodeA = saveOnlineNode("node-a", 10);
+        ManagedNode nodeB = saveOnlineNode("node-b", 10);
+        when(nodeManagerClient.createUser(any(), any(), any())).thenAnswer(invocation ->
+                residentialSuccessResponse(invocation.<CreateUserRequest>getArgument(1).userId()));
+
+        var first = provisioningService.provisionProxyBatch(
+                "batch-ip-dup-1",
+                new ProxyProvisionRequest(
+                        "198.51.100.50 edge.example 1080 user-a secret-a",
+                        List.of("socks"), nodeA.getId(), "client"));
+        assertThat(first.succeeded()).isEqualTo(1);
+
+        var duplicate = provisioningService.provisionProxyBatch(
+                "batch-ip-dup-2",
+                new ProxyProvisionRequest(
+                        "198.51.100.50 edge.example 1080 user-b secret-b",
+                        List.of("socks"), nodeA.getId(), "client"));
+        assertThat(duplicate.succeeded()).isZero();
+        assertThat(duplicate.failed()).isEqualTo(1);
+        assertThat(duplicate.results().getFirst().error())
+                .contains("已分配出口 IP 198.51.100.50")
+                .contains("同一节点不允许重复分配相同出口 IP");
+
+        var crossNode = provisioningService.provisionProxyBatch(
+                "batch-ip-dup-3",
+                new ProxyProvisionRequest(
+                        "198.51.100.50 edge.example 1080 user-c secret-c",
+                        List.of("socks"), nodeB.getId(), "client"));
+        assertThat(crossNode.succeeded()).isEqualTo(1);
+        assertThat(crossNode.failed()).isZero();
+    }
+
+    @Test
+    void autoSelectionSkipsNodeAlreadyHoldingSourceIp() {
+        ManagedNode nodeA = saveOnlineNode("node-a", 10);
+        ManagedNode nodeB = saveOnlineNode("node-b", 10);
+        when(nodeManagerClient.createUser(any(), any(), any())).thenAnswer(invocation ->
+                residentialSuccessResponse(invocation.<CreateUserRequest>getArgument(1).userId()));
+
+        var first = provisioningService.provisionProxyBatch(
+                "batch-auto-dup-1",
+                new ProxyProvisionRequest(
+                        "198.51.100.60 edge.example 1080 user-a secret-a",
+                        List.of("socks"), nodeA.getId(), "client"));
+        assertThat(first.succeeded()).isEqualTo(1);
+
+        // 不指定节点：自动选择应跳过已承载该 IP 的 node-a，落到 node-b
+        var second = provisioningService.provisionProxyBatch(
+                "batch-auto-dup-2",
+                new ProxyProvisionRequest(
+                        "198.51.100.60 edge.example 1080 user-b secret-b",
+                        List.of("socks"), null, "client"));
+        assertThat(second.succeeded()).isEqualTo(1);
+        ResidentialAllocation secondAllocation = allocationRepository.findAll().stream()
+                .filter(allocation -> "user-b".equals(allocation.getControlUserId()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(secondAllocation.getNode().getId()).isEqualTo(nodeB.getId());
+    }
+
+    @Test
     void onlyPendingRetryableAndFailedAllocationsCanBeDeleted() {
         ResidentialAllocation pending = allocationRepository.saveAndFlush(new ResidentialAllocation(
                 "delete-pending", "hash", "pending-user", "remote-pending", "socks"));
@@ -586,6 +648,12 @@ class ProvisioningServiceIntegrationTest {
     @Test
     void proxyDomainResolvingToPreferredNodeIsRejectedToPreventLoop() {
         ManagedNode node = saveOnlineNodeAtHost("node-proxy-loop", 10, "198.51.100.50");
+        node.recordHeartbeat(new AgentHeartbeat(
+                node.getRemoteNodeId(), node.getName(), node.getHost(), "online",
+                node.getManagerVersion(), node.getSingboxVersion(), node.getSingbox(),
+                true, 10, 20, 0, 5, 0, 5001,
+                new TrafficTotals(0, 0, 0, true, "test", Instant.now()), Instant.now()));
+        nodeRepository.saveAndFlush(node);
         when(hostAddressResolver.resolve("upstream.example"))
                 .thenReturn(Set.of("198.51.100.50"));
 

@@ -23,7 +23,12 @@ class ProductionConfigurationTest {
 
         assertThat(environment.getProperty("spring.datasource.url"))
                 .isEqualTo("jdbc:mysql://db.example.com:3306/control-plane"
-                        + "?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=true");
+                        + "?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=true"
+                        + "&cachePrepStmts=true&useServerPrepStmts=true&cacheCallableStmts=true"
+                        + "&prepStmtCacheSize=256&prepStmtCacheSqlLimit=2048"
+                        + "&useLocalSessionState=true&useLocalTransactionState=true"
+                        + "&rewriteBatchedStatements=true&maintainTimeStats=false"
+                        + "&socketTimeout=30000&connectTimeout=15000");
         assertThat(environment.getProperty("server.port")).isEqualTo("8090");
     }
 

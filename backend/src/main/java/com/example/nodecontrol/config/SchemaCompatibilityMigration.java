@@ -98,11 +98,15 @@ public class SchemaCompatibilityMigration {
                         + "ADD COLUMN max_source_ips INT NULL");
                 log.info("Added missing compatibility column {}.{}", ALLOCATION_TABLE, MAX_SOURCE_IPS_COLUMN);
             }
+            ensureResidentialAllocationIndexes(metadata);
             if (tableExists(metadata, NODE_TABLE)
                     && !columnExists(metadata, NODE_TABLE, SOCKS_INBOUND_PORT_COLUMN)) {
                 jdbcTemplate.execute("ALTER TABLE managed_nodes "
                         + "ADD COLUMN socks_inbound_port INT NULL");
                 log.info("Added missing compatibility column {}.{}", NODE_TABLE, SOCKS_INBOUND_PORT_COLUMN);
+            }
+            if (tableExists(metadata, NODE_TABLE)) {
+                ensureManagedNodeIndexes(metadata);
             }
         } catch (SQLException exception) {
             throw new IllegalStateException(
@@ -254,5 +258,71 @@ public class SchemaCompatibilityMigration {
                     + indexName.replace("`", "``") + "`");
             log.info("Removed legacy global unique index {} from {}.control_user_id", indexName, ALLOCATION_TABLE);
         }
+    }
+
+    private void ensureResidentialAllocationIndexes(DatabaseMetaData metadata) throws SQLException {
+        ensureIndex(metadata, ALLOCATION_TABLE, "idx_allocations_node_state",
+                "node_id", "state");
+        ensureIndex(metadata, ALLOCATION_TABLE, "idx_allocations_control_user_state",
+                "control_user_id", "state");
+        ensureIndex(metadata, ALLOCATION_TABLE, "idx_allocations_state",
+                "state");
+        ensureIndex(metadata, ALLOCATION_TABLE, "idx_allocations_node_user_state",
+                "node_id", "control_user_id", "state");
+        // 同节点出口 IP 去重校验的查询索引
+        ensureIndex(metadata, ALLOCATION_TABLE, "idx_allocations_source_ip_state",
+                "proxy_source_ip", "state");
+    }
+
+    private void ensureManagedNodeIndexes(DatabaseMetaData metadata) throws SQLException {
+        ensureIndex(metadata, NODE_TABLE, "idx_managed_nodes_status",
+                "status");
+        ensureIndex(metadata, NODE_TABLE, "idx_managed_nodes_host",
+                "host");
+    }
+
+    private void ensureIndex(DatabaseMetaData metadata, String table,
+                             String indexName, String... columns) throws SQLException {
+        if (indexExists(metadata, table, indexName)) {
+            return;
+        }
+        String cols = String.join(", ", columns);
+        try {
+            jdbcTemplate.execute("CREATE INDEX `" + indexName + "` ON `" + table + "` (" + cols + ")");
+            log.info("Created performance index {} on {}({})", indexName, table, cols);
+        } catch (DataAccessException exception) {
+            if (!isDuplicateIndex(exception)) {
+                log.warn("Failed to create index {} on {}: {}", indexName, table, exception.getMessage());
+            }
+        }
+    }
+
+    private boolean indexExists(DatabaseMetaData metadata, String table, String indexName) throws SQLException {
+        ResultSet indexes = metadata.getIndexInfo(null, null, table, false, false);
+        if (indexes == null) {
+            return false;
+        }
+        try (ResultSet rs = indexes) {
+            while (rs.next()) {
+                String name = rs.getString("INDEX_NAME");
+                if (indexName.equalsIgnoreCase(name)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean isDuplicateIndex(DataAccessException exception) {
+        Throwable cause = exception;
+        while (cause != null) {
+            if (cause instanceof SQLException sqlException
+                    && (sqlException.getErrorCode() == 1061
+                    || "42S11".equals(sqlException.getSQLState()))) {
+                return true;
+            }
+            cause = cause.getCause();
+        }
+        return false;
     }
 }

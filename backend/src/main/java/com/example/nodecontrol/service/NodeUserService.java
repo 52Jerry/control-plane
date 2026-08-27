@@ -45,6 +45,8 @@ import java.util.concurrent.Future;
 @Service
 public class NodeUserService {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(NodeUserService.class);
+
     private final ManagedNodeService nodeService;
     private final NodeManagerClient client;
     private final RemoteOperationService operationService;
@@ -362,13 +364,47 @@ public class NodeUserService {
             NodeAccessInfo remote = provisioningService.accessInfo(
                     client.getConnections(node, user.userId()), includeAccessCredentials);
             if (remote != null) {
-                return remote;
+                return withUpstreamAccess(remote, user.proxyServer());
             }
         } catch (RuntimeException ignored) {
             // Keep the user list available when one legacy user has incomplete connection data.
         }
         return provisioningService.accessInfo(
                 node.getHost(), node.getSocksInboundPort(), user.socksUsername(), includeAccessCredentials);
+    }
+
+    /**
+     * Node Manager 存量用户的 SOCKS 元数据可能记成了对外域名（如
+     * proxy.xinxinip.com），此时 IP 列会显示域名、地区也会按域名解析出错。
+     * proxyServer 是节点侧实际绑定的上游 host:port，以其为准修正
+     * IP 与端口，并按真实出口 IP 重新解析地区。
+     */
+    private NodeAccessInfo withUpstreamAccess(NodeAccessInfo access, String proxyServer) {
+        if (access == null || proxyServer == null || proxyServer.isBlank()) {
+            return access;
+        }
+        String trimmed = proxyServer.trim();
+        int separator = trimmed.lastIndexOf(':');
+        if (separator <= 0 || separator == trimmed.length() - 1) {
+            return access;
+        }
+        String host = trimmed.substring(0, separator);
+        Integer port;
+        try {
+            port = Integer.valueOf(trimmed.substring(separator + 1));
+        } catch (NumberFormatException exception) {
+            return access;
+        }
+        if (host.startsWith("[") && host.endsWith("]")) {
+            host = host.substring(1, host.length() - 1);
+        }
+        if (!provisioningService.isIpLiteral(host)
+                || (host.equals(access.ip()) && port.equals(access.port()))) {
+            return access;
+        }
+        CountryInfo country = provisioningService.resolveCountry(host);
+        return new NodeAccessInfo(host, port, access.username(), access.password(),
+                country.code(), country.name(), country.city());
     }
 
     private ResidentialAllocation newer(ResidentialAllocation first, ResidentialAllocation second) {
@@ -387,7 +423,7 @@ public class NodeUserService {
     private boolean matchesIp(NodeAccessInfo access, String normalizedIp) {
         return normalizedIp == null || normalizedIp.isBlank()
                 || (access != null && access.ip() != null
-                && access.ip().toLowerCase(Locale.ROOT).contains(normalizedIp));
+                && access.ip().toLowerCase(Locale.ROOT).startsWith(normalizedIp));
     }
 
     public CreateUserResponse createUser(UUID nodeId, CreateUserRequest request, String idempotencyKey) {
@@ -399,11 +435,15 @@ public class NodeUserService {
         CreateUserRequest effectiveRequest = withDefaultPolicy(withProxyCredentials(request));
         provisioningService.ensureUserIdAvailableOnNode(node, effectiveRequest.userId());
         String key = idempotencyKey == null || idempotencyKey.isBlank() ? UUID.randomUUID().toString() : idempotencyKey.trim();
+        log.info("创建节点用户: node={}, userId={}, protocols={}", node.getName(), effectiveRequest.userId(), effectiveRequest.protocols());
         CreateUserResponse response = operationService.execute(
                 node, key, "CREATE_USER", effectiveRequest, CreateUserResponse.class,
                 () -> client.createUser(node, effectiveRequest, key));
         if (response != null && response.success()) {
+            log.info("节点用户创建成功: node={}, userId={}", node.getName(), effectiveRequest.userId());
             invalidateUserSnapshots(nodeId);
+        } else {
+            log.warn("节点用户创建失败: node={}, userId={}, response={}", node.getName(), effectiveRequest.userId(), response);
         }
         audit("USER_CREATED", actorUserId, nodeId, effectiveRequest.userId(), "创建节点用户");
         return response;
@@ -601,8 +641,9 @@ public class NodeUserService {
         if (!needsCountryRepair(connection) || ipCountryResolver == null) {
             return connection;
         }
+        Map<String, Object> protocolInfo = connection.protocolInfo();
         String sourceIp = firstText(
-                asText(connection.protocolInfo().get("sourceIp")),
+                protocolInfo == null ? null : asText(protocolInfo.get("sourceIp")),
                 allocation == null ? null : allocation.getProxySourceIp());
         if (sourceIp == null) {
             return connection;
@@ -639,7 +680,10 @@ public class NodeUserService {
     private UserConnection enrichConnectionCountry(UserConnection connection,
                                                      String sourceIp,
                                                      CountryInfo country) {
-        Map<String, Object> protocolInfo = new LinkedHashMap<>(connection.protocolInfo());
+        Map<String, Object> existingInfo = connection.protocolInfo();
+        Map<String, Object> protocolInfo = existingInfo == null
+                ? new LinkedHashMap<>()
+                : new LinkedHashMap<>(existingInfo);
         protocolInfo.put("sourceIp", sourceIp);
         protocolInfo.put("ip", firstText(asText(protocolInfo.get("ip")), sourceIp));
         protocolInfo.put("countryCode", country.code().toUpperCase(Locale.ROOT));
@@ -657,7 +701,11 @@ public class NodeUserService {
         if (connection == null || !connection.proxyBound()) {
             return false;
         }
-        return !isKnownCountryCode(asText(connection.protocolInfo().get("countryCode")));
+        Map<String, Object> protocolInfo = connection.protocolInfo();
+        if (protocolInfo == null) {
+            return true;
+        }
+        return !isKnownCountryCode(asText(protocolInfo.get("countryCode")));
     }
 
     private boolean isKnownCountryCode(String value) {
@@ -713,6 +761,7 @@ public class NodeUserService {
     public OperationResponse deleteUser(UUID nodeId, String userId, String idempotencyKey, UUID actorUserId) {
         ManagedNode node = nodeService.getNode(nodeId);
         String key = idempotencyKey == null || idempotencyKey.isBlank() ? UUID.randomUUID().toString() : idempotencyKey.trim();
+        log.info("删除节点用户: node={}, userId={}", node.getName(), userId);
         try {
             OperationResponse response = operationService.execute(
                     node,
@@ -723,14 +772,12 @@ public class NodeUserService {
                     () -> client.deleteUser(node, userId, key));
             if (response != null) {
                 if (response.success()) {
+                    log.info("节点用户删除成功: node={}, userId={}", node.getName(), userId);
                     releaseLocalAllocations(node, userId);
                     invalidateUserSnapshots(nodeId);
                     audit("USER_DELETED", actorUserId, nodeId, userId, "删除节点用户");
                 } else if (isRemoteUserMissing(200, response.message())) {
-                    // Some older Node Manager versions return HTTP 200 with
-                    // success=false when the user was already deleted. Treat
-                    // that as an idempotent delete and release stale local
-                    // allocation records.
+                    log.info("远端节点用户已不存在，释放本地分配: node={}, userId={}", node.getName(), userId);
                     releaseLocalAllocations(node, userId);
                     invalidateUserSnapshots(nodeId);
                     audit("USER_DELETED", actorUserId, nodeId, userId, "删除节点用户并释放本地分配");
@@ -740,16 +787,14 @@ public class NodeUserService {
             }
             return response;
         } catch (RemoteNodeException exception) {
-            // DELETE is intentionally idempotent: if the remote user was
-            // already removed, the desired state has been reached. Release
-            // only for an explicit missing-user response; a timeout, 5xx, or
-            // unrelated conflict must remain visible to the caller.
             if (isRemoteUserMissing(exception)) {
+                log.info("远端节点用户已不存在(404)，释放本地分配: node={}, userId={}", node.getName(), userId);
                 releaseLocalAllocations(node, userId);
                 invalidateUserSnapshots(nodeId);
                 audit("USER_DELETED", actorUserId, nodeId, userId, "删除节点用户并释放本地分配");
                 return new OperationResponse(true, userId, "远端节点用户已不存在，本地分配记录已释放");
             }
+            log.error("节点用户删除失败: node={}, userId={}, 原因: {}", node.getName(), userId, exception.getMessage());
             throw exception;
         }
     }
@@ -795,8 +840,13 @@ public class NodeUserService {
     }
 
     private void audit(String eventType, UUID actorUserId, UUID nodeId, String userId, String summary) {
-        if (auditLogService != null) {
+        if (auditLogService == null) {
+            return;
+        }
+        try {
             auditLogService.record(eventType, actorUserId, "NODE_USER", nodeId + "/" + userId, summary);
+        } catch (RuntimeException exception) {
+            log.warn("审计日志记录失败 ({}): {}", eventType, exception.getMessage());
         }
     }
 }

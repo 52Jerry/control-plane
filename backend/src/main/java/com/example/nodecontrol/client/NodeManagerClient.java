@@ -59,26 +59,51 @@ public class NodeManagerClient {
     }
 
     public UserPage getUsers(ManagedNode node, int page, int pageSize, String keyword) {
-        return execute(() -> client(node).get()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/api/users")
-                        .queryParam("page", page)
-                        .queryParam("pageSize", pageSize)
-                        .queryParamIfPresent("keyword", java.util.Optional.ofNullable(keyword).filter(value -> !value.isBlank()))
-                        .build())
-                .retrieve()
-                .onStatus(HttpStatusCode::isError, this::handleError)
-                .body(UserPage.class));
+        return execute(() -> {
+            JsonNode body = client(node).get()
+                    .uri(uriBuilder -> uriBuilder
+                            .path("/api/users")
+                            .queryParam("page", page)
+                            .queryParam("pageSize", pageSize)
+                            .queryParamIfPresent("keyword", java.util.Optional.ofNullable(keyword).filter(value -> !value.isBlank()))
+                            .build())
+                    .retrieve()
+                    .onStatus(HttpStatusCode::isError, this::handleError)
+                    .body(JsonNode.class);
+            if (body == null || body.isNull()) {
+                throw new RemoteNodeException(502, "节点返回了空响应");
+            }
+            try {
+                return objectMapper.treeToValue(unwrapEnvelope(body), UserPage.class);
+            } catch (IOException exception) {
+                throw new RemoteNodeException(502, "节点返回的用户列表响应格式无效", exception);
+            }
+        });
     }
 
     public CreateUserResponse createUser(ManagedNode node, CreateUserRequest request, String idempotencyKey) {
-        return execute(() -> client(node).post()
-                .uri("/api/user/create")
-                .header("Idempotency-Key", idempotencyKey)
-                .body(request)
-                .retrieve()
-                .onStatus(HttpStatusCode::isError, this::handleError)
-                .body(CreateUserResponse.class));
+        return execute(() -> {
+            JsonNode body = client(node).post()
+                    .uri("/api/user/create")
+                    .header("Idempotency-Key", idempotencyKey)
+                    .body(request)
+                    .retrieve()
+                    .onStatus(HttpStatusCode::isError, this::handleError)
+                    .body(JsonNode.class);
+            if (body == null || body.isNull()) {
+                throw new RemoteNodeException(502, "节点返回了空响应");
+            }
+            if (hasExplicitFailure(body)) {
+                String message = extractErrorMessage(body);
+                throw new RemoteNodeException(409,
+                        message == null || message.isBlank() ? "节点用户创建失败" : message);
+            }
+            try {
+                return objectMapper.treeToValue(unwrapEnvelope(body), CreateUserResponse.class);
+            } catch (IOException exception) {
+                throw new RemoteNodeException(502, "节点返回的用户创建响应格式无效", exception);
+            }
+        });
     }
 
     public UserConnection getConnections(ManagedNode node, String userId) {

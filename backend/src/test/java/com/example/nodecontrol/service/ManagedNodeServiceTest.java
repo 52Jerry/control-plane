@@ -76,6 +76,32 @@ class ManagedNodeServiceTest {
     }
 
     @Test
+    void rejectsRegistrationWhenServerIpAlreadyRegistered() {
+        ManagedNodeRepository repository = mock(ManagedNodeRepository.class);
+        ResidentialAllocationRepository allocationRepository = mock(ResidentialAllocationRepository.class);
+        NodeManagerClient client = mock(NodeManagerClient.class);
+        ControlPlaneProperties properties = new ControlPlaneProperties();
+        properties.getSecurity().setEncryptionKey("unit-test-encryption-key");
+        SecretCipher secretCipher = new SecretCipher(properties);
+        ManagedNodeService service = new ManagedNodeService(
+                repository, allocationRepository, client, properties, secretCipher);
+
+        ManagedNode existing = new ManagedNode("Node A", "http://node-a.example:8088", secretCipher.encrypt("token-a"));
+        existing.recordHeartbeat(heartbeat());
+
+        when(repository.findByBaseUrl("http://node-b.example:8088")).thenReturn(Optional.empty());
+        when(client.getAgentInfo("http://node-b.example:8088", "token-b")).thenReturn(agentInfo("node-b"));
+        when(client.getHeartbeat(any(ManagedNode.class))).thenReturn(heartbeat());
+        when(repository.findByHost("203.0.113.10")).thenReturn(List.of(existing));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.register(
+                        new RegisterNodeRequest("Node B", "http://node-b.example:8088/", "token-b")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("该节点 IP 203.0.113.10 已存在")
+                .hasMessageContaining("Node A");
+    }
+
+    @Test
     void installerRegistrationUpdatesExistingNodeByStableRemoteId() {
         ManagedNodeRepository repository = mock(ManagedNodeRepository.class);
         ResidentialAllocationRepository allocationRepository = mock(ResidentialAllocationRepository.class);

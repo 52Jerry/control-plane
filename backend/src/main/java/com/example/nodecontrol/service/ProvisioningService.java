@@ -31,6 +31,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.security.MessageDigest;
@@ -56,6 +57,8 @@ import java.net.UnknownHostException;
 
 @Service
 public class ProvisioningService {
+
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(ProvisioningService.class);
 
     private static final Collection<String> CAPACITY_STATES = List.of("PROVISIONING", "RETRYABLE", "ACTIVE");
     private static final Set<String> DELETABLE_STATES = Set.of("PENDING", "RETRYABLE", "FAILED");
@@ -128,11 +131,14 @@ public class ProvisioningService {
                                                            ProxyProvisionRequest request,
                                                            UUID actorUserId) {
         String batchKey = normalizeRequestKey(idempotencyKey);
+        log.info("开始批量开通住宅 SOCKS 节点，批次标识: {}", batchKey);
         List<ProxyRowParseResult> parsedRows = parseProxyRows(request.input());
+        log.info("解析完成，共 {} 行输入", parsedRows.size());
         List<PreparedProxyRow> preparedRows = new ArrayList<>();
         List<ProxyProvisionResult> results = new ArrayList<>();
         for (ProxyRowParseResult parsed : parsedRows) {
             if (parsed.error() != null) {
+                log.warn("第 {} 行解析失败: {}", parsed.rowNumber(), parsed.error());
                 results.add(new ProxyProvisionResult(
                         parsed.rowNumber(), parsed.sourceIp(), parsed.sourceDomain(),
                         parsed.sourceAddress(), parsed.sourcePort(),
@@ -145,9 +151,13 @@ public class ProvisioningService {
                 if (row.directSocksFormat() && request.preferredNodeId() == null) {
                     throw new IllegalArgumentException("四列简写必须指定节点管理器");
                 }
+                if (request.preferredNodeId() != null) {
+                    rejectDuplicateSourceIpOnPreferredNode(request.preferredNodeId(), row);
+                }
                 String userId = normalizeBatchUserId(row.username(), batchKey, row.rowNumber());
                 String rowKey = rowRequestKey(batchKey, row.rowNumber());
                 CountryInfo country = resolveCountry(row.sourceIp());
+                log.debug("第 {} 行: sourceIp={}, server={}, country={}", row.rowNumber(), row.sourceIp(), row.server(), country.name());
                 ProxyConfig proxy = new ProxyConfig(
                         "socks5", row.server(), row.port(), row.username(), row.password(),
                         row.sourceIp(),
@@ -161,31 +171,58 @@ public class ProvisioningService {
                         rowKey, hash(hashInput), provisionRequest, row, proxy);
                 preparedRows.add(new PreparedProxyRow(row, provisionRequest, proxy, allocation));
             } catch (RuntimeException exception) {
-                results.add(toProxyResult(
-                        row, null, sanitizeError(exception.getMessage(), null)));
+                String error = sanitizeError(exception.getMessage(), null);
+                log.warn("第 {} 行准备开通失败: {}", row.rowNumber(), error);
+                results.add(toProxyResult(row, null, error));
             }
         }
+        log.info("准备阶段完成，{} 行待开通，{} 行已失败", preparedRows.size(), results.size());
 
         for (PreparedProxyRow prepared : preparedRows) {
+            ParsedProxyRow row = prepared.row();
             try {
+                log.info("开始开通第 {} 行: sourceIp={}, userId={}", row.rowNumber(), row.sourceIp(), prepared.request().userId());
                 AllocationView allocation = executeProvisioning(
                         prepared.allocation(), prepared.request(), prepared.proxy());
-                results.add(toProxyResult(prepared.row(), withoutProxyCredentials(allocation), null));
+                log.info("第 {} 行开通成功: sourceIp={}, userId={}", row.rowNumber(), row.sourceIp(), prepared.request().userId());
+                results.add(toProxyResult(row, withoutProxyCredentials(allocation), null));
             } catch (RuntimeException exception) {
                 ResidentialAllocation failed = allocationRepository.findById(prepared.allocation().getId())
                         .orElse(prepared.allocation());
                 String error = sanitizeError(exception.getMessage(), prepared.proxy());
-                results.add(toProxyResult(prepared.row(), toViewWithoutProxyCredentials(failed), error));
+                log.error("第 {} 行开通失败: sourceIp={}, userId={}, 原因: {}", row.rowNumber(), row.sourceIp(), prepared.request().userId(), error);
+                results.add(toProxyResult(row, toViewWithoutProxyCredentials(failed), error));
             }
         }
         results.sort(Comparator.comparingInt(ProxyProvisionResult::rowNumber));
         int succeeded = (int) results.stream()
                 .filter(this::isSuccessfulResidentialResult)
                 .count();
+        int failed = results.size() - succeeded;
+        log.info("批量开通完成: 共 {} 行，成功 {} 行，失败 {} 行", results.size(), succeeded, failed);
         ProxyProvisionBatchResponse response = new ProxyProvisionBatchResponse(
-                results.size(), succeeded, results.size() - succeeded, results);
-        audit("PROXY_BATCH_PROVISIONED", actorUserId, batchKey,
-                "批量创建住宅 SOCKS 节点：成功 " + succeeded + "，失败 " + (results.size() - succeeded));
+                results.size(), succeeded, failed, results);
+        // 审计日志：汇总 + 每行失败原因
+        if (failed > 0) {
+            StringBuilder detail = new StringBuilder();
+            detail.append("批量创建住宅 SOCKS 节点：成功 ").append(succeeded).append("，失败 ").append(failed);
+            List<String> failureReasons = results.stream()
+                    .filter(r -> r.error() != null)
+                    .map(r -> "第" + r.rowNumber() + "行(" + (r.sourceIp() != null ? r.sourceIp() : "未知") + "): " + r.error())
+                    .toList();
+            log.warn("批量开通失败详情: {}", String.join("; ", failureReasons));
+            for (String reason : failureReasons) {
+                if (detail.length() + reason.length() + 2 > 500) {
+                    detail.append("...");
+                    break;
+                }
+                detail.append("；").append(reason);
+            }
+            audit("PROXY_BATCH_PROVISIONED", actorUserId, batchKey, detail.toString());
+        } else {
+            audit("PROXY_BATCH_PROVISIONED", actorUserId, batchKey,
+                    "批量创建住宅 SOCKS 节点：全部成功 " + succeeded + " 行");
+        }
         return response;
     }
 
@@ -228,6 +265,7 @@ public class ProvisioningService {
             if (proxy != null) {
                 validateResidentialAllocation(prepared.activeView());
             }
+            log.info("节点分配已激活，跳过开通: allocationId={}, userId={}", allocation.getId(), request.userId());
             return prepared.activeView();
         }
         CreateUserRequest remoteRequest = new CreateUserRequest(
@@ -241,6 +279,7 @@ public class ProvisioningService {
         );
 
         try {
+            log.info("调用节点管理器创建用户: node={}, userId={}, protocols={}", prepared.node().getName(), prepared.userId(), prepared.protocols());
             CreateUserResponse response = client.createUser(
                     prepared.node(), remoteRequest, prepared.remoteIdempotencyKey());
             if (proxy != null) {
@@ -249,6 +288,7 @@ public class ProvisioningService {
             return complete(prepared.allocationId(), response);
         } catch (RemoteNodeException exception) {
             if (exception.getStatusCode() == 409) {
+                log.info("节点返回 409 冲突，尝试恢复已存在的用户: node={}, userId={}", prepared.node().getName(), prepared.userId());
                 try {
                     UserConnection existing = client.getConnections(prepared.node(), prepared.userId());
                     CreateUserResponse recovered = new CreateUserResponse(
@@ -258,16 +298,21 @@ public class ProvisioningService {
                     if (proxy != null) {
                         validateResidentialResponse(recovered);
                     }
+                    log.info("从冲突中恢复用户成功: node={}, userId={}", prepared.node().getName(), prepared.userId());
                     return complete(prepared.allocationId(), recovered);
-                } catch (RuntimeException ignored) {
-                    // The original conflict is more useful than a failed reconciliation lookup.
+                } catch (RuntimeException recoveryError) {
+                    log.warn("从冲突中恢复用户失败: node={}, userId={}, 原因: {}", prepared.node().getName(), prepared.userId(), recoveryError.getMessage());
                 }
             }
-            fail(prepared.allocationId(), sanitizeError(exception.getMessage(), proxy),
+            String error = sanitizeError(exception.getMessage(), proxy);
+            log.error("节点管理器创建用户失败: node={}, userId={}, statusCode={}, 原因: {}", prepared.node().getName(), prepared.userId(), exception.getStatusCode(), error);
+            fail(prepared.allocationId(), error,
                     isDefinitiveFailure(exception));
             throw exception;
         } catch (RuntimeException exception) {
-            fail(prepared.allocationId(), sanitizeError(exception.getMessage(), proxy), false);
+            String error = sanitizeError(exception.getMessage(), proxy);
+            log.error("开通用户时发生异常: node={}, userId={}, 原因: {}", prepared.node() != null ? prepared.node().getName() : "未知", prepared.userId(), error);
+            fail(prepared.allocationId(), error, false);
             throw exception;
         }
     }
@@ -280,9 +325,11 @@ public class ProvisioningService {
         return listAllocations(ip, false);
     }
 
+    @Transactional(readOnly = true)
     public List<AllocationView> listAllocations(String ip, boolean includeAccessCredentials) {
         return allocationRepository.findAll(allocationSpecification(ip),
                         Sort.by(Sort.Direction.DESC, "createdAt")).stream()
+                .limit(500)
                 .map(allocation -> toView(allocation, false, includeAccessCredentials))
                 .toList();
     }
@@ -295,6 +342,7 @@ public class ProvisioningService {
         return listAllocations(page, pageSize, ip, false);
     }
 
+    @Transactional(readOnly = true)
     public AllocationPageResponse listAllocations(int page,
                                                    int pageSize,
                                                    String ip,
@@ -502,11 +550,14 @@ public class ProvisioningService {
             node = selectNode(request.preferredNodeId(), proxy, proxyServerAddresses);
         } else if (!isAllocatable(node)) {
             throw new IllegalStateException("该分配首次选中的节点当前不可用，请恢复节点后重试");
-        } else if (wouldProxyLoopThroughNode(node, proxy, proxyServerAddresses)) {
-            if (request.preferredNodeId() != null) {
-                throw proxyLoopException(true);
+        } else {
+            rejectSourceIpDuplicateOnNode(node, proxy, allocation.getId());
+            if (wouldProxyLoopThroughNode(node, proxy, proxyServerAddresses)) {
+                if (request.preferredNodeId() != null) {
+                    throw proxyLoopException(true);
+                }
+                node = selectNode(null, proxy, proxyServerAddresses);
             }
-            node = selectNode(null, proxy, proxyServerAddresses);
         }
         ensureUserIdAvailableOnNode(
                 node,
@@ -531,23 +582,137 @@ public class ProvisioningService {
                                    ProxyConfig proxy,
                                    Set<String> proxyServerAddresses) {
         List<ManagedNode> nodes = nodeRepository.findAllocatableNodesForUpdate();
-        // The proxy server is the upstream SOCKS endpoint, not a Node Manager
-        // endpoint.  Node selection is controlled only by preferredNodeId (when
-        // supplied) or by the normal online/capacity selection below.
+        log.debug("可选节点数量: {}", nodes.size());
+        // 同节点出口 IP 去重：已承载该 IP 的节点不可再承载一次（跨节点允许重复）。
+        Set<UUID> sourceIpOccupiedNodeIds = findSourceIpOccupiedNodeIds(proxy);
         if (preferredNodeId != null) {
             nodes = nodes.stream().filter(node -> node.getId().equals(preferredNodeId)).toList();
             if (nodes.isEmpty()) {
+                log.warn("指定节点不可用于自动开通: preferredNodeId={}", preferredNodeId);
                 throw new IllegalStateException("指定节点当前不可用于自动开通");
             }
+            if (sourceIpOccupiedNodeIds.contains(preferredNodeId)) {
+                log.warn("指定节点已分配该出口 IP: preferredNodeId={}", preferredNodeId);
+                throw sourceIpDuplicateException(nodes.getFirst(), proxy.sourceIp(), true);
+            }
             if (wouldProxyLoopThroughNode(nodes.getFirst(), proxy, proxyServerAddresses)) {
+                log.warn("指定节点与上游 SOCKS 地址相同，会形成代理回环: node={}", nodes.getFirst().getName());
                 throw proxyLoopException(true);
             }
         }
-        return nodes.stream()
-                .filter(this::hasCapacity)
-                .filter(node -> !wouldProxyLoopThroughNode(node, proxy, proxyServerAddresses))
+        // 批量查询所有节点的分配计数，避免 N+1 查询
+        Map<UUID, Long> allocationCounts = batchAllocationCounts(nodes);
+        ManagedNode selected = nodes.stream()
+                .filter(node -> {
+                    boolean hasCap = hasCapacity(node, allocationCounts);
+                    if (!hasCap) {
+                        log.debug("节点容量不足: node={}, maxUsers={}, currentUsers={}, allocationCount={}", node.getName(), node.getMaxUsers(), node.getUserCount(), allocationCounts.getOrDefault(node.getId(), 0L));
+                    }
+                    return hasCap;
+                })
+                .filter(node -> {
+                    boolean loops = wouldProxyLoopThroughNode(node, proxy, proxyServerAddresses);
+                    if (loops) {
+                        log.debug("节点排除(代理回环): node={}", node.getName());
+                    }
+                    return !loops;
+                })
+                .filter(node -> {
+                    boolean occupied = sourceIpOccupiedNodeIds.contains(node.getId());
+                    if (occupied) {
+                        log.debug("节点排除(出口IP已分配): node={}", node.getName());
+                    }
+                    return !occupied;
+                })
                 .findFirst()
-                .orElseThrow(() -> new IllegalStateException("没有在线且有剩余容量的节点管理器"));
+                .orElse(null);
+        if (selected == null) {
+            boolean hasCapacityNodes = nodes.stream().anyMatch(node -> hasCapacity(node, allocationCounts));
+            if (!hasCapacityNodes) {
+                log.warn("没有在线且有剩余容量的节点管理器");
+                throw new IllegalStateException("没有在线且有剩余容量的节点管理器");
+            }
+            if (!sourceIpOccupiedNodeIds.isEmpty()
+                    && nodes.stream().allMatch(node -> sourceIpOccupiedNodeIds.contains(node.getId()))) {
+                throw sourceIpDuplicateException(nodes.getFirst(), proxy.sourceIp(), false);
+            }
+            log.warn("所有在线节点均因代理回环被排除");
+            throw proxyLoopException(false);
+        }
+        log.info("选中节点: node={}, host={}, capacity={}/{}", selected.getName(), selected.getHost(), selected.getUserCount(), selected.getMaxUsers());
+        return selected;
+    }
+
+    private Set<UUID> findSourceIpOccupiedNodeIds(ProxyConfig proxy) {
+        String sourceIp = proxy == null ? null : proxy.sourceIp();
+        if (sourceIp == null || sourceIp.isBlank()) {
+            return Set.of();
+        }
+        return new java.util.HashSet<>(
+                allocationRepository.findNodeIdsBySourceIpAndStateIn(sourceIp, CAPACITY_STATES));
+    }
+
+    /**
+     * 分配记录已绑定节点（重试路径）时，校验同节点上是否有其他在用记录占用了相同出口 IP。
+     */
+    private void rejectSourceIpDuplicateOnNode(ManagedNode node, ProxyConfig proxy, UUID allocationId) {
+        String sourceIp = proxy == null ? null : proxy.sourceIp();
+        if (sourceIp == null || sourceIp.isBlank()) {
+            return;
+        }
+        allocationRepository
+                .findFirstByNodeIdAndProxySourceIpAndStateInAndIdNot(
+                        node.getId(), sourceIp, CAPACITY_STATES, allocationId)
+                .ifPresent(existing -> {
+                    log.warn("节点 {} 上出口 IP {} 已分配给用户 {}: 重复分配被拒绝",
+                            node.getName(), sourceIp, existing.getControlUserId());
+                    throw new IllegalStateException("该节点已分配出口 IP " + sourceIp
+                            + "（用户 " + existing.getControlUserId() + "），同一节点不允许重复分配相同出口 IP");
+                });
+    }
+
+    /**
+     * 指定节点的批量行在准备阶段即校验同节点 IP 去重，避免创建注定失败的分配记录。
+     */
+    private void rejectDuplicateSourceIpOnPreferredNode(UUID preferredNodeId, ParsedProxyRow row) {
+        String nodeName = nodeRepository.findById(preferredNodeId)
+                .map(ManagedNode::getName)
+                .orElse("指定节点");
+        allocationRepository
+                .findFirstByNodeIdAndProxySourceIpAndStateInAndIdNot(
+                        preferredNodeId, row.sourceIp(), CAPACITY_STATES, UUID.randomUUID())
+                .ifPresent(existing -> {
+                    log.warn("第 {} 行: 节点 {} 上出口 IP {} 已分配给用户 {}，跳过重复分配",
+                            row.rowNumber(), nodeName, row.sourceIp(), existing.getControlUserId());
+                    throw new IllegalStateException("第 " + row.rowNumber() + " 行: 节点 " + nodeName
+                            + " 已分配出口 IP " + row.sourceIp() + "（用户 " + existing.getControlUserId()
+                            + "），同一节点不允许重复分配相同出口 IP");
+                });
+    }
+
+    private IllegalStateException sourceIpDuplicateException(ManagedNode node, String sourceIp, boolean preferredNode) {
+        String prefix = preferredNode
+                ? "指定节点已分配该出口 IP " + sourceIp
+                : "所有在线节点均已分配该出口 IP " + sourceIp + "（跨节点重复请联系管理员）";
+        return new IllegalStateException(prefix + "，同一节点不允许重复分配相同出口 IP");
+    }
+
+    private Map<UUID, Long> batchAllocationCounts(List<ManagedNode> nodes) {
+        if (nodes.isEmpty()) {
+            return Map.of();
+        }
+        List<UUID> nodeIds = nodes.stream().map(ManagedNode::getId).toList();
+        List<Object[]> counts = allocationRepository.countGroupedByNodeId(nodeIds, CAPACITY_STATES);
+        Map<UUID, Long> result = new java.util.HashMap<>();
+        for (Object[] row : counts) {
+            result.put((UUID) row[0], (Long) row[1]);
+        }
+        return result;
+    }
+
+    private boolean hasCapacity(ManagedNode node, Map<UUID, Long> allocationCounts) {
+        long managed = allocationCounts.getOrDefault(node.getId(), 0L);
+        return Math.max(node.getUserCount(), managed) < node.getMaxUsers();
     }
 
     private Set<String> resolveProxyServerAddresses(ProxyConfig proxy) {
@@ -580,21 +745,16 @@ public class ProvisioningService {
             return false;
         }
         Integer nodeSocksPort = node.getSocksInboundPort();
-        // New Node Manager heartbeats report the actual SOCKS inbound port.
-        // Only the same server *and* same port is a loop; another SOCKS
-        // service on the VPS is a valid upstream.  Keep the IP-only fallback
-        // for older agents until their next successful heartbeat.
-        return nodeSocksPort == null || nodeSocksPort == proxy.port();
+        if (nodeSocksPort == null) {
+            log.warn("节点 {} 未上报 SOCKS 入站端口，无法精确判断代理回环，暂时放行", node.getName());
+            return false;
+        }
+        return nodeSocksPort == proxy.port();
     }
 
     private IllegalStateException proxyLoopException(boolean preferredNode) {
         String prefix = preferredNode ? "指定节点的服务器与上游 SOCKS 地址相同" : "没有可用的其他节点承载该上游 SOCKS";
         return new IllegalStateException(prefix + "，会形成代理回环，请选择其他节点");
-    }
-
-    private boolean hasCapacity(ManagedNode node) {
-        long managed = allocationRepository.countByNodeIdAndStateIn(node.getId(), CAPACITY_STATES);
-        return Math.max(node.getUserCount(), managed) < node.getMaxUsers();
     }
 
     /**
@@ -765,7 +925,7 @@ public class ProvisioningService {
         return normalized.isBlank() ? null : normalized.toLowerCase(Locale.ROOT);
     }
 
-    private boolean isIpLiteral(String value) {
+    public boolean isIpLiteral(String value) {
         if (value == null || value.isBlank()) {
             return false;
         }
@@ -1047,17 +1207,16 @@ public class ProvisioningService {
         if (rawPassword != null) {
             enriched.put("rawPassword", rawPassword);
         }
-        // 加速链接：VLESS/VMess/SOCKS 加速链接连接的是节点服务器上 sing-box 的
-        // 入站端口，因此 accelerationDomain 必须是节点服务器的 host（如 203.0.113.20），
-        // 而不是上游 SOCKS 的地址（proxyServer）。Node Manager 已经返回了正确的
-        // accelerationDomain（其自身 host），此处仅在缺失时用节点 host 补全。
-        ManagedNode node = allocation.getNode();
-        String nodeHost = node == null ? null : normalizeServerHost(node.getHost());
-        String accelerationHost = normalizeServerHost(asString(enriched.get("accelerationDomain")));
-        if (nodeHost != null && (accelerationHost == null || isInvalidAccelerationHost(accelerationHost, allocation))) {
-            enriched.put("accelerationDomain", node.getHost().trim());
-        } else if (accelerationHost != null) {
-            enriched.put("accelerationDomain", accelerationHost);
+        // 加速链接：VLESS/VMess/SOCKS 加速统一使用 Node Manager 配置的加速域名
+        // （如 proxy.xinxinip.com，由节点 config.node.acceleration_domain 提供），
+        // 与 Node Manager 自身生成的链接保持一致；仅当缺失时回退节点 host。
+        String accelerationHost = asString(enriched.get("accelerationDomain"));
+        if (accelerationHost == null) {
+            ManagedNode node = allocation.getNode();
+            String nodeHost = node == null ? null : normalizeServerHost(node.getHost());
+            if (nodeHost != null) {
+                enriched.put("accelerationDomain", nodeHost);
+            }
         }
         return enriched;
     }
@@ -1430,7 +1589,7 @@ public class ProvisioningService {
                 row.server(), row.port(), country.name(), country.code(), socksLink, allocation, error);
     }
 
-    private CountryInfo resolveCountry(String sourceIp) {
+    public CountryInfo resolveCountry(String sourceIp) {
         try {
             CountryInfo country = ipCountryResolver.resolve(sourceIp);
             return country == null ? IpCountryResolver.UNKNOWN : country;
@@ -1618,9 +1777,14 @@ public class ProvisioningService {
     }
 
     private void audit(String eventType, UUID actorUserId, Object targetId, String summary) {
-        if (auditLogService != null) {
+        if (auditLogService == null) {
+            return;
+        }
+        try {
             auditLogService.record(eventType, actorUserId, "ALLOCATION",
                     targetId == null ? null : String.valueOf(targetId), summary);
+        } catch (RuntimeException exception) {
+            log.warn("审计日志记录失败 ({}): {}", eventType, exception.getMessage());
         }
     }
 
@@ -1635,12 +1799,22 @@ public class ProvisioningService {
         return normalized;
     }
 
+    private static final Set<String> ALLOWED_PROTOCOLS = Set.of("vless", "vmess", "socks", "socksAcceleration");
+
     private void validateProtocols(List<String> protocols) {
         if (protocols == null || protocols.isEmpty()) {
             throw new IllegalArgumentException("至少选择一种协议");
         }
         if (new LinkedHashSet<>(protocols).size() != protocols.size()) {
             throw new IllegalArgumentException("协议列表不能包含重复值");
+        }
+        for (String protocol : protocols) {
+            if (protocol == null || protocol.isBlank()) {
+                throw new IllegalArgumentException("协议名不能为空");
+            }
+            if (!ALLOWED_PROTOCOLS.contains(protocol.toLowerCase(Locale.ROOT))) {
+                throw new IllegalArgumentException("不支持的协议类型: " + protocol);
+            }
         }
     }
 
@@ -1669,7 +1843,9 @@ public class ProvisioningService {
         if (value == null || value.isBlank()) {
             return List.of();
         }
-        return List.of(value.split(","));
+        return java.util.Arrays.stream(value.split(","))
+                .filter(part -> !part.isBlank())
+                .toList();
     }
 
     private record PreparedProvisioning(

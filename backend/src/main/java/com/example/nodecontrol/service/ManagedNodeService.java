@@ -23,6 +23,7 @@ import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 
 import java.net.URI;
@@ -45,13 +46,23 @@ public class ManagedNodeService {
     private final ControlPlaneProperties properties;
     private final SecretCipher secretCipher;
     private final AuditLogService auditLogService;
+    private final TransactionTemplate transactionTemplate;
 
     public ManagedNodeService(ManagedNodeRepository repository,
                               ResidentialAllocationRepository allocationRepository,
                               NodeManagerClient client,
                               ControlPlaneProperties properties,
                               SecretCipher secretCipher) {
-        this(repository, allocationRepository, client, properties, secretCipher, null);
+        this(repository, allocationRepository, client, properties, secretCipher, null, null);
+    }
+
+    public ManagedNodeService(ManagedNodeRepository repository,
+                              ResidentialAllocationRepository allocationRepository,
+                              NodeManagerClient client,
+                              ControlPlaneProperties properties,
+                              SecretCipher secretCipher,
+                              AuditLogService auditLogService) {
+        this(repository, allocationRepository, client, properties, secretCipher, auditLogService, null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -60,15 +71,18 @@ public class ManagedNodeService {
                               NodeManagerClient client,
                               ControlPlaneProperties properties,
                               SecretCipher secretCipher,
-                              AuditLogService auditLogService) {
+                              AuditLogService auditLogService,
+                              TransactionTemplate transactionTemplate) {
         this.repository = repository;
         this.allocationRepository = allocationRepository;
         this.client = client;
         this.properties = properties;
         this.secretCipher = secretCipher;
         this.auditLogService = auditLogService;
+        this.transactionTemplate = transactionTemplate;
     }
 
+    @Transactional(readOnly = true)
     public List<NodeView> listNodes() {
         return repository.findAll().stream()
                 .sorted(Comparator.comparing(ManagedNode::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder())))
@@ -76,19 +90,22 @@ public class ManagedNodeService {
                 .toList();
     }
 
+    @Transactional(readOnly = true)
     public DashboardView getDashboard() {
-        List<NodeView> nodes = listNodes();
+        List<ManagedNode> nodes = repository.findAll();
+        long activeCount = allocationRepository.countByState("ACTIVE");
+        long retryableCount = allocationRepository.countByState("RETRYABLE");
         return new DashboardView(
                 nodes.size(),
-                nodes.stream().filter(node -> "online".equals(node.status())).count(),
-                nodes.stream().filter(node -> "degraded".equals(node.status())).count(),
-                nodes.stream().mapToLong(NodeView::userCount).sum(),
-                nodes.stream().mapToLong(NodeView::connections).sum(),
-                nodes.stream().mapToLong(NodeView::upload).sum(),
-                nodes.stream().mapToLong(NodeView::download).sum(),
-                nodes.stream().mapToLong(NodeView::totalTraffic).sum(),
-                allocationRepository.count((root, query, builder) -> builder.equal(root.get("state"), "ACTIVE")),
-                allocationRepository.count((root, query, builder) -> builder.equal(root.get("state"), "RETRYABLE"))
+                nodes.stream().filter(node -> "online".equals(node.getStatus())).count(),
+                nodes.stream().filter(node -> "degraded".equals(node.getStatus())).count(),
+                nodes.stream().mapToLong(ManagedNode::getUserCount).sum(),
+                nodes.stream().mapToLong(ManagedNode::getConnections).sum(),
+                nodes.stream().mapToLong(ManagedNode::getUpload).sum(),
+                nodes.stream().mapToLong(ManagedNode::getDownload).sum(),
+                nodes.stream().mapToLong(ManagedNode::getTotalTraffic).sum(),
+                activeCount,
+                retryableCount
         );
     }
 
@@ -106,10 +123,11 @@ public class ManagedNodeService {
         });
 
         AgentInfo info = client.getAgentInfo(baseUrl, token);
-        repository.findByRemoteNodeId(info.nodeId()).ifPresent(node -> {
-            throw new IllegalStateException("该节点管理器标识已经注册");
-        });
         AgentHeartbeat heartbeat = client.getHeartbeat(new ManagedNode(request.name().trim(), baseUrl, token));
+        // 按服务器 IP 防重复注册：重装 Node Manager 后节点标识会变化，但 IP 不变。
+        rejectDuplicateHost(heartbeat, () -> repository.findByRemoteNodeId(info.nodeId()).ifPresent(node -> {
+            throw new IllegalStateException("该节点管理器标识已经注册");
+        }));
         ManagedNode node = new ManagedNode(request.name().trim(), baseUrl, secretCipher.encrypt(token));
         node.updateRegistration(
                 request.name().trim(),
@@ -148,6 +166,8 @@ public class ManagedNodeService {
         ManagedNode node = byRemoteId != null ? byRemoteId : byBaseUrl;
         boolean created = node == null;
         if (created) {
+            // 新注册时按服务器 IP 防重复；已匹配到现有节点则属于更新，不做 IP 校验。
+            rejectDuplicateHost(heartbeat, null);
             node = new ManagedNode(request.name().trim(), baseUrl, secretCipher.encrypt(token));
         }
         int maxUsers = request.maxUsers() == null
@@ -162,6 +182,26 @@ public class ManagedNodeService {
         audit(created ? "NODE_REGISTERED" : "NODE_UPDATED", actorUserId, node.getId(),
                 (created ? "自动注册节点 " : "更新节点注册信息 ") + node.getName());
         return new AgentRegistrationResponse(node.getId(), node.getRemoteNodeId(), node.getStatus(), created);
+    }
+
+    /**
+     * 按服务器 IP（心跳 host）拒绝重复注册。重装 Node Manager 会生成新的
+     * 节点标识（主机名 + machine-id 哈希），旧标识校验认不出同一台服务器，
+     * IP 校验能兜住这种场景。心跳未返回 host 时回退到调用方提供的校验。
+     */
+    private void rejectDuplicateHost(AgentHeartbeat heartbeat, Runnable fallbackWhenHostUnknown) {
+        String host = heartbeat == null || heartbeat.host() == null ? null : heartbeat.host().trim();
+        if (host == null || host.isBlank()) {
+            if (fallbackWhenHostUnknown != null) {
+                fallbackWhenHostUnknown.run();
+            }
+            return;
+        }
+        List<ManagedNode> sameHost = repository.findByHost(host);
+        if (!sameHost.isEmpty()) {
+            throw new IllegalStateException(
+                    "该节点 IP " + host + " 已存在（现有节点：" + sameHost.getFirst().getName() + "）");
+        }
     }
 
     @Transactional
@@ -242,9 +282,38 @@ public class ManagedNodeService {
         });
     }
 
-    @Transactional
+    /**
+     * 心跳 HTTP 请求必须在行锁之外执行：对离线节点的请求可能长时间挂起，
+     * 若在 findByIdForUpdate 的事务内请求，会长时间持有 managed_nodes 行锁，
+     * 阻塞批量开通的选节点 SELECT ... FOR UPDATE，最终触发
+     * socketTimeout 掐断连接（"Unable to rollback against JDBC Connection"）。
+     */
     public void refreshPersisted(UUID nodeId) {
-        refreshNode(getNode(nodeId));
+        ManagedNode snapshot = repository.findById(nodeId)
+                .orElseThrow(() -> new NoSuchElementException("节点不存在"));
+        AgentHeartbeat heartbeat = null;
+        RuntimeException failure = null;
+        try {
+            heartbeat = client.getHeartbeat(snapshot);
+        } catch (RuntimeException exception) {
+            failure = exception;
+        }
+        AgentHeartbeat result = heartbeat;
+        RuntimeException error = failure;
+        transactionTemplate.executeWithoutResult(status -> {
+            ManagedNode node = repository.findByIdForUpdate(nodeId)
+                    .orElseThrow(() -> new NoSuchElementException("节点不存在"));
+            if (result != null) {
+                node.recordHeartbeat(result);
+            } else {
+                ControlPlaneProperties.Heartbeat config = properties.getHeartbeat();
+                node.recordHeartbeatFailure(
+                        error == null ? null : error.getMessage(),
+                        Math.max(1, config.getFailureThreshold()),
+                        Instant.now().minus(Duration.ofMillis(Math.max(1, config.getOfflineAfterMs()))));
+            }
+            repository.save(node);
+        });
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -329,9 +398,14 @@ public class ManagedNodeService {
     }
 
     private void audit(String eventType, UUID actorUserId, UUID nodeId, String summary) {
-        if (auditLogService != null) {
+        if (auditLogService == null) {
+            return;
+        }
+        try {
             auditLogService.record(eventType, actorUserId, "MANAGED_NODE",
                     nodeId == null ? null : nodeId.toString(), summary);
+        } catch (RuntimeException exception) {
+            log.warn("审计日志记录失败 ({}): {}", eventType, exception.getMessage());
         }
     }
 }

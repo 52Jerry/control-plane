@@ -367,23 +367,15 @@ export function buildConnectionExportData(connection, scenarioKey) {
     return result
   }
 
-  if (scenarioKey === 'socksAcceleration') {
-    const socks = connectionSocks(connection)
-    return {
-      ip: connectionSourceIp(connection),
-      accelerationDomain: socks?.host || '',
-      port: socks?.port || '',
-      username: socks?.username || '',
-      password: socks?.password || '',
-      link: selectedLink,
-    }
-  }
-
+  // 加速场景（VLESS/VMess/SOCKS 加速/指纹加速）导出的连接信息统一描述
+  // 指纹加速通道（sing-box SOCKS 入站，端口 5001）的凭据，协议差异只
+  // 体现在“代理链接”列；加速地址优先用后端返回的节点 IP，避免显示
+  // Node Manager 的对外域名（如 proxy.xinxinip.com）。
   const structured = connection?.protocolInfo || {}
   const socks = connectionSocks(connection)
   return {
     ip: connectionSourceIp(connection),
-    accelerationDomain: socks?.host || value(structured, 'accelerationDomain'),
+    accelerationDomain: value(structured, 'accelerationDomain') || socks?.host || '',
     port: socks?.port || '',
     username: socks?.username || '',
     password: socks?.password || '',

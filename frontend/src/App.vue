@@ -1564,7 +1564,7 @@ async function exportNodeUsers() {
     })
     await mapWithConcurrency(batchJobs, 4, async (job) => {
       try {
-        const results = await withExportRequestTimeout(
+        const results = await withRequestTimeout(
           (signal) => api.connectionsBatch(job.nodeId, job.userIds, { signal }),
           30000,
           '批量读取连接信息超时',

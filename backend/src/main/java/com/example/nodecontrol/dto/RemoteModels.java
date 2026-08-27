@@ -251,8 +251,8 @@ public final class RemoteModels {
             @Size(max = 255, message = "SOCKS 用户名不能超过 255 个字符") String socksUsername,
             @Size(max = 255, message = "SOCKS 密码不能超过 255 个字符") String socksPassword,
             @Valid ProxyConfig proxy,
-            @Min(value = 0, message = "流量额度不能小于 0") Long trafficLimitBytes,
-            @Min(value = 0, message = "最大来源 IP 数不能小于 0")
+            @Min(value = 1, message = "流量额度不能小于 1") Long trafficLimitBytes,
+            @Min(value = 1, message = "最大来源 IP 数不能小于 1")
             @Max(value = 1000, message = "最大来源 IP 数不能超过 1000") Integer maxSourceIps
     ) {
         public CreateUserRequest(String userId,
@@ -265,8 +265,8 @@ public final class RemoteModels {
     }
 
     public record UpdateUserPolicyRequest(
-            @Min(value = 0, message = "流量额度不能小于 0") Long trafficLimitBytes,
-            @Min(value = 0, message = "最大来源 IP 数不能小于 0")
+            @Min(value = 1, message = "流量额度不能小于 1") Long trafficLimitBytes,
+            @Min(value = 1, message = "最大来源 IP 数不能小于 1")
             @Max(value = 1000, message = "最大来源 IP 数不能超过 1000") Integer maxSourceIps
     ) {
     }

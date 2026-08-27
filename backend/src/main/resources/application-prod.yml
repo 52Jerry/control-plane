@@ -16,7 +16,7 @@ spring:
 
   datasource:
     # 一般只需填写 CONTROL_PLANE_DB_HOST；特殊场景可用 CONTROL_PLANE_DB_URL 覆盖完整地址。
-    url: ${CONTROL_PLANE_DB_URL:jdbc:mysql://${CONTROL_PLANE_DB_HOST}:${CONTROL_PLANE_DB_PORT:3306}/${CONTROL_PLANE_DB_NAME:control-plane}?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=true}
+    url: ${CONTROL_PLANE_DB_URL:jdbc:mysql://${CONTROL_PLANE_DB_HOST}:${CONTROL_PLANE_DB_PORT:3306}/${CONTROL_PLANE_DB_NAME:control-plane}?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=true&cachePrepStmts=true&useServerPrepStmts=true&cacheCallableStmts=true&prepStmtCacheSize=256&prepStmtCacheSqlLimit=2048&useLocalSessionState=true&useLocalTransactionState=true&rewriteBatchedStatements=true&maintainTimeStats=false&socketTimeout=30000&connectTimeout=15000}
     username: ${CONTROL_PLANE_DB_USERNAME}
     password: ${CONTROL_PLANE_DB_PASSWORD}
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -24,7 +24,14 @@ spring:
       minimum-idle: 5
       maximum-pool-size: 20
       connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 900000
+      keepalive-time: 120000
       connection-test-query: SELECT 1
+      pool-name: ControlPlanePool
+      auto-commit: true
+      validation-timeout: 15000
+      leak-detection-threshold: 60000
 
   jpa:
     hibernate:
