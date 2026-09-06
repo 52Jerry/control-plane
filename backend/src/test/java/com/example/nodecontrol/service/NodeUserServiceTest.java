@@ -325,25 +325,22 @@ class NodeUserServiceTest {
     }
 
     @Test
-    void createdDescSortsAcrossRemotePagesBeforeApplyingLocalPagination() {
+    void createdDescUsesTheRemotePageForFastPagination() {
         Instant oldest = Instant.parse("2026-01-01T00:00:00Z");
         Instant older = Instant.parse("2026-02-01T00:00:00Z");
         Instant newer = Instant.parse("2026-03-01T00:00:00Z");
         Instant newest = Instant.parse("2026-04-01T00:00:00Z");
-        when(client.getUsers(node, 1, 100, null)).thenReturn(new UserPage(
-                List.of(userSummary("oldest", oldest), userSummary("newest", newest)),
-                1, 100, 4));
-        when(client.getUsers(node, 2, 100, null)).thenReturn(new UserPage(
+        when(client.getUsers(node, 2, 2, null, "createdDesc")).thenReturn(new UserPage(
                 List.of(userSummary("newer", newer), userSummary("older", older)),
-                2, 100, 4));
+                2, 2, 4));
 
         UserPage result = service.listUsers(
                 nodeId, 2, 2, null, null, "createdDesc", false);
 
         assertThat(result.total()).isEqualTo(4);
         assertThat(result.items()).extracting(UserSummary::userId)
-                .containsExactly("older", "oldest");
-        verify(client, times(2)).getUsers(eq(node), any(Integer.class), eq(100), eq(null));
+                .containsExactly("newer", "older");
+        verify(client).getUsers(node, 2, 2, null, "createdDesc");
     }
 
     @Test
@@ -352,12 +349,12 @@ class NodeUserServiceTest {
         Instant older = Instant.parse("2026-02-01T00:00:00Z");
         Instant newer = Instant.parse("2026-03-01T00:00:00Z");
         Instant newest = Instant.parse("2026-04-01T00:00:00Z");
-        when(client.getUsers(node, 1, 100, null)).thenReturn(new UserPage(
-                List.of(userSummary("oldest", oldest), userSummary("newest", newest)),
-                1, 100, 4));
-        when(client.getUsers(node, 2, 100, null)).thenReturn(new UserPage(
-                List.of(userSummary("newer", newer), userSummary("older", older)),
-                2, 100, 4));
+        when(client.getUsers(node, 1, 2, null, "createdDesc")).thenReturn(new UserPage(
+                List.of(userSummary("newest", newest), userSummary("newer", newer)),
+                1, 2, 4));
+        when(client.getUsers(node, 2, 2, null, "createdDesc")).thenReturn(new UserPage(
+                List.of(userSummary("older", older), userSummary("oldest", oldest)),
+                2, 2, 4));
 
         UserPage firstPage = service.listUsers(
                 nodeId, 1, 2, null, null, "createdDesc", false);
@@ -368,14 +365,15 @@ class NodeUserServiceTest {
                 .containsExactly("newest", "newer");
         assertThat(secondPage.items()).extracting(UserSummary::userId)
                 .containsExactly("older", "oldest");
-        verify(client, times(2)).getUsers(eq(node), any(Integer.class), eq(100), eq(null));
+        verify(client).getUsers(node, 1, 2, null, "createdDesc");
+        verify(client).getUsers(node, 2, 2, null, "createdDesc");
     }
 
     @Test
     void forcedRefreshReloadsTheRemoteUserSnapshot() {
-        when(client.getUsers(node, 1, 100, null))
-                .thenReturn(new UserPage(List.of(userSummary("before")), 1, 100, 1))
-                .thenReturn(new UserPage(List.of(userSummary("after")), 1, 100, 1));
+        when(client.getUsers(node, 1, 20, null, "createdDesc"))
+                .thenReturn(new UserPage(List.of(userSummary("before")), 1, 20, 1))
+                .thenReturn(new UserPage(List.of(userSummary("after")), 1, 20, 1));
 
         UserPage cached = service.listUsers(
                 nodeId, 1, 20, null, null, "createdDesc", false);
@@ -384,7 +382,7 @@ class NodeUserServiceTest {
 
         assertThat(cached.items()).extracting(UserSummary::userId).containsExactly("before");
         assertThat(refreshed.items()).extracting(UserSummary::userId).containsExactly("after");
-        verify(client, times(2)).getUsers(node, 1, 100, null);
+        verify(client, times(2)).getUsers(node, 1, 20, null, "createdDesc");
     }
 
     @Test
@@ -393,9 +391,9 @@ class NodeUserServiceTest {
         allocation.setUserPolicy(1024L, 1);
         UpdateUserPolicyRequest request = new UpdateUserPolicyRequest(4096L, 3);
         UserPolicyResponse response = new UserPolicyResponse(true, "alice", 4096L, 3);
-        when(client.getUsers(node, 1, 100, null))
-                .thenReturn(new UserPage(List.of(userSummary("before")), 1, 100, 1))
-                .thenReturn(new UserPage(List.of(userSummary("after")), 1, 100, 1));
+        when(client.getUsers(node, 1, 20, null, "createdDesc"))
+                .thenReturn(new UserPage(List.of(userSummary("before")), 1, 20, 1))
+                .thenReturn(new UserPage(List.of(userSummary("after")), 1, 20, 1));
         when(client.updateUserPolicy(node, "alice", request)).thenReturn(response);
         when(allocationRepository.findAllByNodeIdAndControlUserIdAndStateIn(
                 eq(nodeId), eq("alice"), any())).thenReturn(List.of(allocation));
@@ -410,7 +408,7 @@ class NodeUserServiceTest {
         assertThat(allocation.getMaxSourceIps()).isEqualTo(3);
         assertThat(refreshed.items()).extracting(UserSummary::userId).containsExactly("after");
         verify(allocationRepository).save(allocation);
-        verify(client, times(2)).getUsers(node, 1, 100, null);
+        verify(client, times(2)).getUsers(node, 1, 20, null, "createdDesc");
     }
 
     @Test
@@ -460,10 +458,42 @@ class NodeUserServiceTest {
     }
 
     @Test
+    void missingPolicyBackfillPreservesRemoteAndAllocationSpecificValues() {
+        ResidentialAllocation legacyAllocation = activeAllocation("legacy");
+        legacyAllocation.setUserPolicy(4096L, 2);
+        ResidentialAllocation remotePolicyAllocation = activeAllocation("remote");
+
+        UserSummary legacy = userSummary("legacy");
+        UserSummary remote = new UserSummary(
+                "remote", List.of("socks"), "remote", false, null,
+                0, 0, 0, 1000L, 3, List.of(), "active", Instant.now(), null);
+        when(client.getUsers(node, 1, 100, null)).thenReturn(
+                new UserPage(List.of(legacy, remote), 1, 100, 2));
+        when(client.updateUserPolicy(node, "legacy", new UpdateUserPolicyRequest(4096L, 2)))
+                .thenReturn(new UserPolicyResponse(true, "legacy", 4096L, 2));
+        when(allocationRepository.findAllByNodeIdAndControlUserIdAndStateIn(
+                eq(nodeId), eq("legacy"), any())).thenReturn(List.of(legacyAllocation));
+        when(allocationRepository.findAllByNodeIdAndControlUserIdAndStateIn(
+                eq(nodeId), eq("remote"), any())).thenReturn(List.of(remotePolicyAllocation));
+
+        var result = service.synchronizeMissingPolicies(nodeId);
+
+        assertThat(result.total()).isEqualTo(2);
+        assertThat(result.succeeded()).isEqualTo(2);
+        assertThat(result.failed()).isZero();
+        verify(client).updateUserPolicy(node, "legacy", new UpdateUserPolicyRequest(4096L, 2));
+        verify(client, never()).updateUserPolicy(eq(node), eq("remote"), any());
+        assertThat(remotePolicyAllocation.getTrafficLimitBytes()).isEqualTo(1000L);
+        assertThat(remotePolicyAllocation.getMaxSourceIps()).isEqualTo(3);
+        verify(allocationRepository).save(legacyAllocation);
+        verify(allocationRepository).save(remotePolicyAllocation);
+    }
+
+    @Test
     void successfulDeleteInvalidatesTheRemoteUserSnapshot() {
-        when(client.getUsers(node, 1, 100, null))
-                .thenReturn(new UserPage(List.of(userSummary("alice")), 1, 100, 1))
-                .thenReturn(new UserPage(List.of(), 1, 100, 0));
+        when(client.getUsers(node, 1, 20, null, "createdDesc"))
+                .thenReturn(new UserPage(List.of(userSummary("alice")), 1, 20, 1))
+                .thenReturn(new UserPage(List.of(), 1, 20, 0));
         when(client.deleteUser(node, "alice", "delete-cached-user"))
                 .thenReturn(new OperationResponse(true, "alice", "deleted"));
         when(allocationRepository.findAllByControlUserIdAndStateIn(eq("alice"), any()))
@@ -477,25 +507,26 @@ class NodeUserServiceTest {
 
         assertThat(beforeDelete.total()).isEqualTo(1);
         assertThat(afterDelete.total()).isZero();
-        verify(client, times(2)).getUsers(node, 1, 100, null);
+        verify(client, times(2)).getUsers(node, 1, 20, null, "createdDesc");
     }
 
     @Test
-    void createdAscKeepsMissingCreationTimesLast() {
+    void createdAscUsesTheRemotePageForFastPagination() {
         Instant older = Instant.parse("2026-01-01T00:00:00Z");
         Instant newer = Instant.parse("2026-02-01T00:00:00Z");
-        when(client.getUsers(node, 1, 100, null)).thenReturn(new UserPage(
+        when(client.getUsers(node, 1, 3, null, "createdAsc")).thenReturn(new UserPage(
                 List.of(
-                        userSummary("missing", null),
+                        userSummary("older", older),
                         userSummary("newer", newer),
-                        userSummary("older", older)),
-                1, 100, 3));
+                        userSummary("missing", null)),
+                1, 3, 3));
 
         UserPage result = service.listUsers(
                 nodeId, 1, 3, null, null, "createdAsc", false);
 
         assertThat(result.items()).extracting(UserSummary::userId)
                 .containsExactly("older", "newer", "missing");
+        verify(client).getUsers(node, 1, 3, null, "createdAsc");
     }
 
     @Test

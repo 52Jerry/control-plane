@@ -76,6 +76,11 @@ control-plane:
     # 生产默认要求新版 Node Manager 返回完整五协议。
     require-complete-protocols-all: ${CONTROL_PLANE_REQUIRE_COMPLETE_PROTOCOLS_ALL:true}
 
+  user-policy-sync:
+    enabled: ${CONTROL_PLANE_USER_POLICY_SYNC_ENABLED:true}
+    initial-delay-ms: ${CONTROL_PLANE_USER_POLICY_SYNC_INITIAL_DELAY_MS:30000}
+    interval-ms: ${CONTROL_PLANE_USER_POLICY_SYNC_INTERVAL_MS:300000}
+
   installation:
     token-ttl-seconds: ${CONTROL_PLANE_INSTALL_TOKEN_TTL_SECONDS:600}
     claim-ttl-seconds: ${CONTROL_PLANE_INSTALL_CLAIM_TTL_SECONDS:120}

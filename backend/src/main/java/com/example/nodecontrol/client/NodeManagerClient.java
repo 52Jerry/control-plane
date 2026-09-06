@@ -59,6 +59,14 @@ public class NodeManagerClient {
     }
 
     public UserPage getUsers(ManagedNode node, int page, int pageSize, String keyword) {
+        return getUsers(node, page, pageSize, keyword, "createdDesc");
+    }
+
+    public UserPage getUsers(ManagedNode node,
+                             int page,
+                             int pageSize,
+                             String keyword,
+                             String sort) {
         return execute(() -> {
             JsonNode body = client(node).get()
                     .uri(uriBuilder -> uriBuilder
@@ -66,6 +74,7 @@ public class NodeManagerClient {
                             .queryParam("page", page)
                             .queryParam("pageSize", pageSize)
                             .queryParamIfPresent("keyword", java.util.Optional.ofNullable(keyword).filter(value -> !value.isBlank()))
+                            .queryParam("sort", sort)
                             .build())
                     .retrieve()
                     .onStatus(HttpStatusCode::isError, this::handleError)
