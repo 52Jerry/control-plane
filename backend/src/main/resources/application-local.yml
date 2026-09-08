@@ -1,0 +1,96 @@
+# NiuSu Control Plane local launcher configuration.
+# Secrets are read from the project-root .env.local file and are never stored here.
+
+server:
+  # Bind the local service to the loopback interface only.
+  address: 127.0.0.1
+  port: ${CONTROL_PLANE_PORT:8090}
+  forward-headers-strategy: framework
+
+spring:
+  config:
+    # Support starting from either the repository root or the backend directory.
+    import: optional:file:./.env.local[.properties],optional:file:../.env.local[.properties]
+
+  application:
+    name: node-control-plane
+
+  datasource:
+    url: ${CONTROL_PLANE_DB_URL}
+    username: ${CONTROL_PLANE_DB_USERNAME}
+    password: ${CONTROL_PLANE_DB_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      minimum-idle: 2
+      maximum-pool-size: 10
+      idle-timeout: 300000
+      max-lifetime: 1200000
+      connection-timeout: 10000
+      validation-timeout: 5000
+      connection-test-query: SELECT 1
+
+  jpa:
+    hibernate:
+      # Never let a local launcher mutate the online database schema.
+      ddl-auto: none
+    show-sql: false
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+
+  jackson:
+    default-property-inclusion: non_null
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+control-plane:
+  public-url: ${CONTROL_PLANE_PUBLIC_URL:}
+
+  heartbeat:
+    # Do not periodically write node status to the online database from local development.
+    scheduled-enabled: false
+    interval-ms: 15000
+    failure-threshold: 3
+    offline-after-ms: 90000
+
+  schema:
+    # Schema changes must be performed through the production migration process.
+    compatibility-migration-enabled: false
+
+  bootstrap:
+    enabled: false
+    name: ${NODE_MANAGER_NAME:默认节点}
+    base-url: ${NODE_MANAGER_BASE_URL:}
+    token: ${NODE_MANAGER_TOKEN:}
+
+  security:
+    admin-token: ${CONTROL_PLANE_ADMIN_TOKEN:}
+    registration-token: ${CONTROL_PLANE_REGISTRATION_TOKEN:}
+    encryption-key: ${CONTROL_PLANE_ENCRYPTION_KEY}
+    login-username: ${CONTROL_PLANE_LOGIN_USERNAME:}
+    login-password: ${CONTROL_PLANE_LOGIN_PASSWORD:}
+    session-ttl-seconds: ${CONTROL_PLANE_SESSION_TTL_SECONDS:43200}
+
+  provisioning:
+    default-max-users: ${NODE_DEFAULT_MAX_USERS:500}
+    operation-stale-after-ms: ${PROVISIONING_OPERATION_STALE_AFTER_MS:120000}
+    require-complete-protocols-all: ${CONTROL_PLANE_REQUIRE_COMPLETE_PROTOCOLS_ALL:false}
+
+  installation:
+    token-ttl-seconds: ${CONTROL_PLANE_INSTALL_TOKEN_TTL_SECONDS:600}
+    claim-ttl-seconds: ${CONTROL_PLANE_INSTALL_CLAIM_TTL_SECONDS:120}
+
+  geo-ip:
+    enabled: ${CONTROL_PLANE_GEOIP_ENABLED:true}
+    base-url: ${CONTROL_PLANE_GEOIP_BASE_URL:https://get.geojs.io/v1/ip/geo}
+    fallback-base-url: ${CONTROL_PLANE_GEOIP_FALLBACK_BASE_URL:https://ipwho.is}
+    secondary-fallback-base-url: ${CONTROL_PLANE_GEOIP_SECONDARY_FALLBACK_BASE_URL:http://ip-api.com/json}
+    connect-timeout-millis: ${CONTROL_PLANE_GEOIP_CONNECT_TIMEOUT_MILLIS:1500}
+    read-timeout-millis: ${CONTROL_PLANE_GEOIP_READ_TIMEOUT_MILLIS:2500}
+    cache-ttl-seconds: ${CONTROL_PLANE_GEOIP_CACHE_TTL_SECONDS:86400}
+    failure-cache-ttl-seconds: ${CONTROL_PLANE_GEOIP_FAILURE_CACHE_TTL_SECONDS:120}

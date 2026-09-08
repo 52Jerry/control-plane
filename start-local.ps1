@@ -8,6 +8,7 @@ $root = $PSScriptRoot
 $envFile = Join-Path $root '.env.local'
 $envTemplate = Join-Path $root '.env.local.example'
 $jarFile = Join-Path $root 'backend\target\node-control-plane-0.1.0.jar'
+$localConfig = Join-Path $root 'backend\src\main\resources\application-local.yml'
 $buildScript = Join-Path $root 'scripts\build.ps1'
 
 function Import-LocalEnvironment {
@@ -108,7 +109,11 @@ Write-Host ''
 
 Push-Location $root
 try {
-    java -jar $jarFile
+    # The local config is kept outside the distributable JAR and passed explicitly.
+    # This keeps the launcher reproducible on a clean checkout.
+    java -jar $jarFile `
+        "--spring.config.additional-location=file:$localConfig" `
+        '--control-plane.schema.compatibility-migration-enabled=false'
     if ($LASTEXITCODE -ne 0) {
         throw "Control Plane exited with code $LASTEXITCODE"
     }

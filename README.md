@@ -90,7 +90,8 @@ openssl rand -hex 32
 Spring 配置按环境拆分：
 
 - `application-prod.yml`：提交到 GitHub，服务器通过 `prod` Profile 使用，文件中不保存真实秘密。
-- `application.yml`：本地 IDEA 开发配置，被 Git 忽略且不上传 GitHub；直接运行 `NodeControlApplication` 时自动使用，真实秘密从被 Git 忽略的 `.env.local` 读取。
+- `application-local.yml`：提交到 GitHub 的本地启动配置，不包含真实秘密；启动脚本显式加载它，真实秘密从被 Git 忽略的 `.env.local` 读取。
+- `application.yml`：可选的本地 IDEA 开发配置，被 Git 忽略且不上传 GitHub；直接运行 `NodeControlApplication` 时使用，真实秘密从被 Git 忽略的 `.env.local` 读取。
 
 启动时只有在 `control_users` 表为空的情况下，控制面才使用配置的管理员账号密码创建第一个账号。密码使用 BCrypt 哈希入库。数据库已经存在账号后，修改环境变量或重启服务不会覆盖任何账号。
 
@@ -119,7 +120,7 @@ Windows PowerShell 在项目根目录执行：
 .\start-local.ps1
 ```
 
-脚本读取 Git 忽略的 `.env.local` 和本地 `application.yml`，连接阿里云 `control-plane` RDS。源码有更新时会自动构建前端和后端，启动后访问 `http://127.0.0.1:8090`。本地配置使用 `ddl-auto=none`，不允许 Hibernate 自动创建、校验或修改生产表；同时关闭自动节点心跳刷新，避免 IDEA 启动后周期性写回线上节点状态。
+脚本读取 Git 忽略的 `.env.local`，并显式加载仓库中的 `application-local.yml`，连接阿里云 `control-plane` RDS。源码有更新时会自动构建前端和后端，启动后访问 `http://127.0.0.1:8090`。本地配置使用 `ddl-auto=none`，不允许 Hibernate 自动创建、校验或修改生产表；同时关闭自动节点心跳刷新，避免本地启动后周期性写回线上节点状态。
 
 如果需要强制重新构建：
 
