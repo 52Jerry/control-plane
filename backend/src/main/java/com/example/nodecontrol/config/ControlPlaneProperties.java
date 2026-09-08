@@ -11,6 +11,7 @@ public class ControlPlaneProperties {
     private final Provisioning provisioning = new Provisioning();
     private final Installation installation = new Installation();
     private final GeoIp geoIp = new GeoIp();
+    private final UserPolicySync userPolicySync = new UserPolicySync();
     private String publicUrl = "";
 
     public Heartbeat getHeartbeat() {
@@ -35,6 +36,10 @@ public class ControlPlaneProperties {
 
     public GeoIp getGeoIp() {
         return geoIp;
+    }
+
+    public UserPolicySync getUserPolicySync() {
+        return userPolicySync;
     }
 
     public String getPublicUrl() {
@@ -81,6 +86,36 @@ public class ControlPlaneProperties {
 
         public void setOfflineAfterMs(long offlineAfterMs) {
             this.offlineAfterMs = offlineAfterMs;
+        }
+    }
+
+    public static class UserPolicySync {
+        private boolean enabled = true;
+        private long initialDelayMs = 30000;
+        private long intervalMs = 300000;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public long getInitialDelayMs() {
+            return initialDelayMs;
+        }
+
+        public void setInitialDelayMs(long initialDelayMs) {
+            this.initialDelayMs = initialDelayMs;
+        }
+
+        public long getIntervalMs() {
+            return intervalMs;
+        }
+
+        public void setIntervalMs(long intervalMs) {
+            this.intervalMs = intervalMs;
         }
     }
 

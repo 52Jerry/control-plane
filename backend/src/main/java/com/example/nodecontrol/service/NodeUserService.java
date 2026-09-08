@@ -62,6 +62,8 @@ public class NodeUserService {
     private static final String CREATED_ASC = "createdAsc";
     private static final long USER_SNAPSHOT_TTL_NANOS = java.time.Duration.ofSeconds(30).toNanos();
     private static final int USER_ACCESS_CONCURRENCY = 8;
+    private static final String USER_ID_ASC = "userIdAsc";
+    private static final String USER_ID_DESC = "userIdDesc";
 
     private final Map<UserSnapshotKey, UserSnapshot> userSnapshots = new ConcurrentHashMap<>();
 
@@ -141,16 +143,26 @@ public class NodeUserService {
         String normalizedSort = normalizeSort(sort);
         ManagedNode node = nodeService.getNode(nodeId);
         boolean filteringByIp = ip != null && !ip.isBlank();
+        // The normal screen only needs one remote page. Scanning every remote
+        // user before returning page 1 makes large nodes appear to hang.
+        if (!filteringByIp) {
+            UserPage remotePage = client.getUsers(node, page, pageSize, keyword, normalizedSort);
+            return new UserPage(
+                    enrichUsers(node, remotePage.items(), null, includeAccessCredentials, false),
+                    remotePage.page(), remotePage.pageSize(), remotePage.total());
+        }
         List<UserSummary> remoteUsers = fetchAllUsers(node, keyword, refresh);
         if (filteringByIp) {
             remoteUsers = enrichUsers(node, remoteUsers, ip, includeAccessCredentials);
         }
         List<UserSummary> sortedUsers = remoteUsers.stream()
-                .sorted(createdAtComparator(normalizedSort))
+                .sorted(userComparator(normalizedSort))
                 .toList();
         List<UserSummary> pageItems = page(sortedUsers, page, pageSize);
         if (!filteringByIp) {
-            pageItems = enrichUsers(node, pageItems, null, includeAccessCredentials);
+            // The list already contains the cheap metadata needed for the table.
+            // Fetch complete connection details only when the user opens them.
+            pageItems = enrichUsers(node, pageItems, null, includeAccessCredentials, false);
         }
         return new UserPage(pageItems, page, pageSize, sortedUsers.size());
     }
@@ -171,7 +183,7 @@ public class NodeUserService {
                 includeAccessCredentials,
                 filteringByIp);
         return enrichedUsers.stream()
-                .sorted(createdAtComparator(normalizedSort))
+                .sorted(userComparator(normalizedSort))
                 .toList();
     }
 
@@ -252,7 +264,12 @@ public class NodeUserService {
         return users.subList(from, to);
     }
 
-    private Comparator<UserSummary> createdAtComparator(String sort) {
+    private Comparator<UserSummary> userComparator(String sort) {
+        if (USER_ID_ASC.equals(sort) || USER_ID_DESC.equals(sort)) {
+            Comparator<UserSummary> comparator = Comparator.comparing(
+                    UserSummary::userId, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER));
+            return USER_ID_ASC.equals(sort) ? comparator : comparator.reversed();
+        }
         Comparator<Instant> instantComparator = CREATED_ASC.equals(sort)
                 ? Comparator.naturalOrder()
                 : Comparator.reverseOrder();
@@ -265,8 +282,10 @@ public class NodeUserService {
 
     private String normalizeSort(String sort) {
         String normalized = sort == null || sort.isBlank() ? CREATED_DESC : sort.trim();
-        if (!CREATED_DESC.equals(normalized) && !CREATED_ASC.equals(normalized)) {
-            throw new IllegalArgumentException("排序方式仅支持 createdDesc 或 createdAsc");
+        if (!CREATED_DESC.equals(normalized) && !CREATED_ASC.equals(normalized)
+                && !USER_ID_ASC.equals(normalized) && !USER_ID_DESC.equals(normalized)) {
+            throw new IllegalArgumentException(
+                    "排序方式仅支持 createdDesc、createdAsc、userIdAsc 或 userIdDesc");
         }
         return normalized;
     }
@@ -357,8 +376,13 @@ public class NodeUserService {
         if (stored != null && stored.ip() != null && stored.port() != null) {
             return stored;
         }
+        NodeAccessInfo local = provisioningService.accessInfo(
+                node.getHost(), node.getSocksInboundPort(), user.socksUsername(), includeAccessCredentials);
+        if (user.proxyBound()) {
+            local = withUpstreamAccess(local, user.proxyServer());
+        }
         if (!allowRemoteFallback) {
-            return null;
+            return local;
         }
         try {
             NodeAccessInfo remote = provisioningService.accessInfo(
@@ -369,8 +393,7 @@ public class NodeUserService {
         } catch (RuntimeException ignored) {
             // Keep the user list available when one legacy user has incomplete connection data.
         }
-        return provisioningService.accessInfo(
-                node.getHost(), node.getSocksInboundPort(), user.socksUsername(), includeAccessCredentials);
+        return local;
     }
 
     /**
@@ -517,12 +540,77 @@ public class NodeUserService {
                 defaults.trafficLimitBytes(), defaults.maxSourceIps(), List.copyOf(failures));
     }
 
+    /**
+     * Backfill policy fields for users created before policy defaults were
+     * introduced. Existing remote values win; local allocation values are the
+     * next fallback, and current defaults fill only the remaining gaps.
+     */
+    public UserPolicyMigrationResponse synchronizeMissingPolicies(UUID nodeId) {
+        ManagedNode node = nodeService.getNode(nodeId);
+        UserPolicyDefaultsService.DefaultUserPolicy defaults = defaultUserPolicy();
+        List<UserSummary> users = scanAllUsers(node, null);
+        List<UserPolicyMigrationFailure> failures = new ArrayList<>();
+        int succeeded = 0;
+        for (UserSummary user : users) {
+            try {
+                ResidentialAllocation allocation = latestAllocation(nodeId, user.userId());
+                Long trafficLimitBytes = positive(user.trafficLimitBytes());
+                Integer maxSourceIps = positive(user.maxSourceIps());
+                if (trafficLimitBytes == null && allocation != null) {
+                    trafficLimitBytes = positive(allocation.getTrafficLimitBytes());
+                }
+                if (maxSourceIps == null && allocation != null) {
+                    maxSourceIps = positive(allocation.getMaxSourceIps());
+                }
+                trafficLimitBytes = trafficLimitBytes == null
+                        ? defaults.trafficLimitBytes() : trafficLimitBytes;
+                maxSourceIps = maxSourceIps == null
+                        ? defaults.maxSourceIps() : maxSourceIps;
+
+                boolean needsRemoteUpdate = positive(user.trafficLimitBytes()) == null
+                        || positive(user.maxSourceIps()) == null;
+                UserPolicyResponse response;
+                if (needsRemoteUpdate) {
+                    response = client.updateUserPolicy(node, user.userId(),
+                            new UpdateUserPolicyRequest(trafficLimitBytes, maxSourceIps));
+                    if (response == null || !response.success()) {
+                        failures.add(new UserPolicyMigrationFailure(
+                                user.userId(), "节点未确认缺失策略回填成功"));
+                        continue;
+                    }
+                    trafficLimitBytes = positive(response.trafficLimitBytes()) == null
+                            ? trafficLimitBytes : positive(response.trafficLimitBytes());
+                    maxSourceIps = positive(response.maxSourceIps()) == null
+                            ? maxSourceIps : positive(response.maxSourceIps());
+                }
+                syncAllocationPolicy(nodeId, user.userId(),
+                        new UserPolicyResponse(true, user.userId(), trafficLimitBytes, maxSourceIps));
+                succeeded++;
+            } catch (RuntimeException exception) {
+                failures.add(new UserPolicyMigrationFailure(
+                        user.userId(), sanitizeMigrationError(exception.getMessage())));
+            }
+        }
+        invalidateUserSnapshots(nodeId);
+        return new UserPolicyMigrationResponse(
+                nodeId, node.getName(), users.size(), succeeded, failures.size(),
+                defaults.trafficLimitBytes(), defaults.maxSourceIps(), List.copyOf(failures));
+    }
+
     private UserPolicyDefaultsService.DefaultUserPolicy defaultUserPolicy() {
         return policyDefaultsService == null
                 ? new UserPolicyDefaultsService.DefaultUserPolicy(
                         ControlPlaneSettings.INITIAL_TRAFFIC_LIMIT_BYTES,
                         ControlPlaneSettings.INITIAL_MAX_SOURCE_IPS)
                 : policyDefaultsService.getDefaults();
+    }
+
+    private Long positive(Long value) {
+        return value == null || value <= 0 ? null : value;
+    }
+
+    private Integer positive(Integer value) {
+        return value == null || value <= 0 ? null : value;
     }
 
     private void syncAllocationPolicy(UUID nodeId, String userId, UserPolicyResponse response) {

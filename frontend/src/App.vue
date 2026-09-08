@@ -443,14 +443,14 @@ async function fetchUserPage(query, { force = false } = {}) {
   const requestKey = `${generation}:${cacheKey}:${force ? 'refresh' : 'cached'}`
   if (userPageRequests.has(requestKey)) return userPageRequests.get(requestKey)
 
-  const request = api.users(query.nodeId, {
+  const request = withRequestTimeout((signal) => api.users(query.nodeId, {
     page: query.page,
     pageSize: query.pageSize,
     keyword: query.keyword,
     ip: query.ip,
     sort: query.sort,
     refresh: force || undefined,
-  }).then((data) => {
+  }, { signal }), 20000, '读取节点用户超时，请稍后重试').then((data) => {
     if (generation === userPageCacheGeneration) userPageCache.set(cacheKey, data)
     return data
   }).finally(() => {
@@ -509,7 +509,6 @@ async function loadUsers(resetPage = false, options = {}) {
     const data = userPageCache.get(cacheKey)
     loading.users = false
     applyUserPage(data, query)
-    prefetchNextUserPage(query, data.total)
     return
   }
 
@@ -519,7 +518,6 @@ async function loadUsers(resetPage = false, options = {}) {
     if (requestVersion !== userLoadRequestVersion
       || userPageCacheKey(currentUserPageQuery(targetPage)) !== cacheKey) return
     applyUserPage(data, query)
-    prefetchNextUserPage(query, data.total)
   } catch (error) {
     if (error.status === 401) throw error
     if (requestVersion !== userLoadRequestVersion) return
@@ -2139,9 +2137,11 @@ onBeforeUnmount(() => {
           <div class="table-tools">
             <input v-model="userPage.keyword" placeholder="搜索用户 ID" @keyup.enter="loadUsers(true)" />
             <input v-model="userPage.ip" placeholder="按 IP 搜索" @keyup.enter="loadUsers(true)" />
-            <select v-model="userPage.sort" aria-label="创建时间排序" @change="loadUsers(true)">
+            <select v-model="userPage.sort" aria-label="节点用户排序" @change="loadUsers(true)">
               <option value="createdDesc">最新创建</option>
               <option value="createdAsc">最早创建</option>
+              <option value="userIdAsc">用户 ID 升序</option>
+              <option value="userIdDesc">用户 ID 降序</option>
             </select>
             <button class="button ghost icon-text" @click="loadUsers(true)"><Search :size="14" />搜索</button>
             <button v-if="canViewSensitive" class="button ghost icon-text" :title="revealListCredentials ? '隐藏认证信息' : '显示认证信息'" @click="revealListCredentials = !revealListCredentials"><EyeOff v-if="revealListCredentials" :size="14" /><Eye v-else :size="14" />认证</button>
