@@ -67,6 +67,10 @@ public class ManagedNode {
     @Column(nullable = false)
     private int userCount;
 
+    /** Number of dead upstream SOCKS outbounds reported by node-manager health checker. */
+    @Column(nullable = false)
+    private int deadOutboundCount;
+
     /** Public SOCKS inbound port reported by Node Manager for loop protection. */
     @Column(name = "socks_inbound_port")
     private Integer socksInboundPort;
@@ -156,6 +160,7 @@ public class ManagedNode {
         this.connections = heartbeat.connections();
         this.systemConnections = heartbeat.systemConnections();
         this.userCount = heartbeat.userCount();
+        this.deadOutboundCount = heartbeat.deadOutbounds() == null ? 0 : heartbeat.deadOutbounds().size();
         this.socksInboundPort = heartbeat.socksPort();
         this.upload = heartbeat.traffic() == null ? 0 : heartbeat.traffic().upload();
         this.download = heartbeat.traffic() == null ? 0 : heartbeat.traffic().download();
@@ -257,6 +262,10 @@ public class ManagedNode {
 
     public int getUserCount() {
         return userCount;
+    }
+
+    public int getDeadOutboundCount() {
+        return deadOutboundCount;
     }
 
     public Integer getSocksInboundPort() {

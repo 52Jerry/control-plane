@@ -1966,6 +1966,7 @@ onBeforeUnmount(() => {
           <div><span>CPU</span><strong>{{ selectedNode.cpu.toFixed(1) }}%</strong></div>
           <div><span>内存</span><strong>{{ selectedNode.memory.toFixed(1) }}%</strong></div>
             <div><span>容量</span><strong>{{ selectedNode.userCount }} / {{ selectedNode.maxUsers }}</strong></div>
+            <div><span>失效代理</span><strong :class="{ 'danger-text': selectedNode.deadOutboundCount > 0 }">{{ selectedNode.deadOutboundCount || 0 }}</strong></div>
             <div><span>版本</span><strong>{{ selectedNode.managerVersion || '-' }}</strong></div>
           </div>
           <div v-if="canOperateNodes" class="node-actions">
@@ -2196,7 +2197,7 @@ onBeforeUnmount(() => {
           <article v-for="node in nodes" :key="node.id" class="compact-node" :class="{ selected: node.id === selectedNodeId }" @click="selectNode(node.id)">
             <div><span class="status-dot" :class="node.status"></span><strong>{{ node.name }}</strong></div>
             <p>{{ node.baseUrl }}</p>
-            <dl><div><dt>状态</dt><dd>{{ node.maintenance ? '维护' : (node.enabled ? statusText(node.status) : '停用') }}</dd></div><div><dt>容量</dt><dd>{{ node.userCount }} / {{ node.maxUsers }}</dd></div><div><dt>流量</dt><dd>{{ formatBytes(node.totalTraffic) }}</dd></div></dl>
+            <dl><div><dt>状态</dt><dd>{{ node.maintenance ? '维护' : (node.enabled ? statusText(node.status) : '停用') }}</dd></div><div><dt>容量</dt><dd>{{ node.userCount }} / {{ node.maxUsers }}</dd></div><div><dt>流量</dt><dd>{{ formatBytes(node.totalTraffic) }}</dd></div><div v-if="node.deadOutboundCount > 0"><dt>失效代理</dt><dd class="danger-text">{{ node.deadOutboundCount }}</dd></div></dl>
           </article>
           <button v-if="nodes.length === 0 && canOperateNodes" class="empty-node" @click="modal.node = true"><Plus :size="18" />注册第一个节点管理器</button>
         </div>

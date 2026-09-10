@@ -41,6 +41,15 @@ public final class RemoteModels {
     ) {
     }
 
+    public record DeadOutbound(
+            String userId,
+            String server,
+            int port,
+            String tag,
+            int failCount
+    ) {
+    }
+
     public record AgentHeartbeat(
             String nodeId,
             String name,
@@ -57,8 +66,33 @@ public final class RemoteModels {
             int userCount,
             Integer socksPort,
             TrafficTotals traffic,
+            List<DeadOutbound> deadOutbounds,
             Instant reportedAt
     ) {
+        public AgentHeartbeat {
+            deadOutbounds = deadOutbounds == null ? List.of() : List.copyOf(deadOutbounds);
+        }
+        /** Compatibility constructor for older agents without deadOutbounds. */
+        public AgentHeartbeat(String nodeId,
+                              String name,
+                              String host,
+                              String status,
+                              String managerVersion,
+                              String singboxVersion,
+                              String singbox,
+                              boolean apiAvailable,
+                              double cpu,
+                              double memory,
+                              int connections,
+                              int systemConnections,
+                              int userCount,
+                              Integer socksPort,
+                              TrafficTotals traffic,
+                              Instant reportedAt) {
+            this(nodeId, name, host, status, managerVersion, singboxVersion, singbox,
+                    apiAvailable, cpu, memory, connections, systemConnections, userCount,
+                    socksPort, traffic, List.of(), reportedAt);
+        }
         /** Compatibility constructor for older tests/agents without socksPort. */
         public AgentHeartbeat(String nodeId,
                               String name,
@@ -77,7 +111,7 @@ public final class RemoteModels {
                               Instant reportedAt) {
             this(nodeId, name, host, status, managerVersion, singboxVersion, singbox,
                     apiAvailable, cpu, memory, connections, systemConnections, userCount,
-                    null, traffic, reportedAt);
+                    null, traffic, List.of(), reportedAt);
         }
     }
 
