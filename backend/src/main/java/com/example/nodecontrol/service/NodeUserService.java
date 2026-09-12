@@ -19,6 +19,9 @@ import com.example.nodecontrol.dto.RemoteModels.ProxyMetadataUpdateRequest;
 import com.example.nodecontrol.dto.RemoteModels.ReloadResponse;
 import com.example.nodecontrol.dto.RemoteModels.TrafficResponse;
 import com.example.nodecontrol.dto.RemoteModels.UpdateUserPolicyRequest;
+import com.example.nodecontrol.dto.RemoteModels.UpdateUserExpirationRequest;
+import com.example.nodecontrol.dto.RemoteModels.UserExpirationResponse;
+import com.example.nodecontrol.dto.RemoteModels.ExpiredUserListResponse;
 import com.example.nodecontrol.dto.RemoteModels.UserConnection;
 import com.example.nodecontrol.dto.RemoteModels.UserPage;
 import com.example.nodecontrol.dto.RemoteModels.UserPolicyResponse;
@@ -440,7 +443,8 @@ public class NodeUserService {
         return new UserSummary(
                 user.userId(), user.protocols(), user.socksUsername(), user.proxyBound(), user.proxyServer(),
                 user.upload(), user.download(), user.total(), user.trafficLimitBytes(), user.maxSourceIps(),
-                user.activeSourceIps(), user.status(), user.createdAt(), access);
+                user.activeSourceIps(), user.status(), user.createdAt(), user.expiresAt(),
+                user.expirationStatus(), access);
     }
 
     private boolean matchesIp(NodeAccessInfo access, String normalizedIp) {
@@ -481,7 +485,7 @@ public class NodeUserService {
         return new CreateUserRequest(
                 request.userId(), request.protocols(),
                 request.proxy().username(), request.proxy().password(), request.proxy(),
-                request.trafficLimitBytes(), request.maxSourceIps());
+                request.trafficLimitBytes(), request.maxSourceIps(), request.expiresAt());
     }
 
     private CreateUserRequest withDefaultPolicy(CreateUserRequest request) {
@@ -493,7 +497,8 @@ public class NodeUserService {
                         : request.trafficLimitBytes(),
                 request.maxSourceIps() == null
                         ? defaults.maxSourceIps()
-                        : request.maxSourceIps());
+                        : request.maxSourceIps(),
+                request.expiresAt());
     }
 
     public UserPolicyResponse updatePolicy(UUID nodeId,
@@ -782,7 +787,8 @@ public class NodeUserService {
         return new UserConnection(
                 connection.success(), connection.userId(), connection.uuid(), connection.protocols(),
                 connection.vless(), connection.vmess(), connection.socks(), connection.proxyBound(),
-                connection.createdAt(), connection.protocolsAll(), protocolInfo);
+                connection.createdAt(), connection.expiresAt(), connection.expirationStatus(),
+                connection.protocolsAll(), protocolInfo);
     }
 
     private boolean needsCountryRepair(UserConnection connection) {
@@ -820,6 +826,36 @@ public class NodeUserService {
 
     public TrafficResponse getTraffic(UUID nodeId, String userId) {
         return client.getTraffic(nodeService.getNode(nodeId), userId);
+    }
+
+    public ExpiredUserListResponse listExpiredUsers(UUID nodeId) {
+        return client.getExpiredUsers(nodeService.getNode(nodeId));
+    }
+
+    public UserExpirationResponse updateExpiration(UUID nodeId,
+                                                    String userId,
+                                                    UpdateUserExpirationRequest request,
+                                                    UUID actorUserId) {
+        UserExpirationResponse response = client.updateUserExpiration(
+                nodeService.getNode(nodeId), userId, request);
+        if (response != null && response.success()) {
+            invalidateUserSnapshots(nodeId);
+        }
+        audit("USER_EXPIRATION_UPDATED", actorUserId, nodeId, userId, "更新节点用户有效期");
+        return response;
+    }
+
+    public UserExpirationResponse restoreUser(UUID nodeId,
+                                               String userId,
+                                               UpdateUserExpirationRequest request,
+                                               UUID actorUserId) {
+        UserExpirationResponse response = client.restoreUser(
+                nodeService.getNode(nodeId), userId, request);
+        if (response != null && response.success()) {
+            invalidateUserSnapshots(nodeId);
+        }
+        audit("USER_EXPIRATION_RESTORED", actorUserId, nodeId, userId, "恢复节点用户并更新有效期");
+        return response;
     }
 
     public ProxyDetails getProxy(UUID nodeId, String userId) {

@@ -9,6 +9,9 @@ import com.example.nodecontrol.dto.RemoteModels.OperationResponse;
 import com.example.nodecontrol.dto.RemoteModels.ProxyDetails;
 import com.example.nodecontrol.dto.RemoteModels.TrafficResponse;
 import com.example.nodecontrol.dto.RemoteModels.UpdateUserPolicyRequest;
+import com.example.nodecontrol.dto.RemoteModels.UpdateUserExpirationRequest;
+import com.example.nodecontrol.dto.RemoteModels.UserExpirationResponse;
+import com.example.nodecontrol.dto.RemoteModels.ExpiredUserListResponse;
 import com.example.nodecontrol.dto.RemoteModels.UserConnection;
 import com.example.nodecontrol.dto.RemoteModels.UserPage;
 import com.example.nodecontrol.dto.RemoteModels.UserPolicyResponse;
@@ -62,6 +65,31 @@ public class UserController {
                         nodeId, page, pageSize, keyword, ip, sort, includeAccessCredentials, true)
                 : userService.listUsers(
                         nodeId, page, pageSize, keyword, ip, sort, includeAccessCredentials));
+    }
+
+    @GetMapping("/expired-users")
+    public ResponseEntity<ExpiredUserListResponse> expiredUsers(@PathVariable UUID nodeId) {
+        return noStore(userService.listExpiredUsers(nodeId));
+    }
+
+    @PatchMapping("/users/{userId}/expiration")
+    public ResponseEntity<UserExpirationResponse> updateExpiration(
+            @PathVariable UUID nodeId,
+            @PathVariable String userId,
+            @RequestBody UpdateUserExpirationRequest request,
+            HttpServletRequest servletRequest
+    ) {
+        return noStore(userService.updateExpiration(nodeId, userId, request, actor(servletRequest)));
+    }
+
+    @PostMapping("/users/{userId}/restore")
+    public ResponseEntity<UserExpirationResponse> restoreUser(
+            @PathVariable UUID nodeId,
+            @PathVariable String userId,
+            @RequestBody UpdateUserExpirationRequest request,
+            HttpServletRequest servletRequest
+    ) {
+        return noStore(userService.restoreUser(nodeId, userId, request, actor(servletRequest)));
     }
 
     @GetMapping("/users/export")

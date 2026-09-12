@@ -129,6 +129,8 @@ public final class RemoteModels {
             List<String> activeSourceIps,
             String status,
             Instant createdAt,
+            Instant expiresAt,
+            String expirationStatus,
             NodeAccessInfo access
     ) {
         public UserSummary(String userId,
@@ -142,7 +144,8 @@ public final class RemoteModels {
                            String status,
                            Instant createdAt) {
             this(userId, protocols, socksUsername, proxyBound, proxyServer,
-                    upload, download, total, null, null, List.of(), status, createdAt, null);
+                    upload, download, total, null, null, List.of(), status, createdAt,
+                    null, "ACTIVE", null);
         }
 
         public UserSummary(String userId,
@@ -157,7 +160,27 @@ public final class RemoteModels {
                            Instant createdAt,
                            NodeAccessInfo access) {
             this(userId, protocols, socksUsername, proxyBound, proxyServer,
-                    upload, download, total, null, null, List.of(), status, createdAt, access);
+                    upload, download, total, null, null, List.of(), status, createdAt,
+                    null, "ACTIVE", access);
+        }
+
+        public UserSummary(String userId,
+                           List<String> protocols,
+                           String socksUsername,
+                           boolean proxyBound,
+                           String proxyServer,
+                           long upload,
+                           long download,
+                           long total,
+                           Long trafficLimitBytes,
+                           Integer maxSourceIps,
+                           List<String> activeSourceIps,
+                           String status,
+                           Instant createdAt,
+                           NodeAccessInfo access) {
+            this(userId, protocols, socksUsername, proxyBound, proxyServer,
+                    upload, download, total, trafficLimitBytes, maxSourceIps,
+                    activeSourceIps, status, createdAt, null, "ACTIVE", access);
         }
 
         public UserSummary {
@@ -192,6 +215,8 @@ public final class RemoteModels {
             SocksConnection socks,
             boolean proxyBound,
             Instant createdAt,
+            Instant expiresAt,
+            String expirationStatus,
             Map<String, String> protocolsAll,
             Map<String, Object> protocolInfo
     ) {
@@ -204,7 +229,8 @@ public final class RemoteModels {
                               SocksConnection socks,
                               boolean proxyBound,
                               Instant createdAt) {
-            this(success, userId, uuid, protocols, vless, vmess, socks, proxyBound, createdAt, Map.of(), Map.of());
+            this(success, userId, uuid, protocols, vless, vmess, socks, proxyBound, createdAt,
+                    null, "ACTIVE", Map.of(), Map.of());
         }
 
         public UserConnection(boolean success,
@@ -217,7 +243,23 @@ public final class RemoteModels {
                               boolean proxyBound,
                               Instant createdAt,
                               Map<String, String> protocolsAll) {
-            this(success, userId, uuid, protocols, vless, vmess, socks, proxyBound, createdAt, protocolsAll, Map.of());
+            this(success, userId, uuid, protocols, vless, vmess, socks, proxyBound, createdAt,
+                    null, "ACTIVE", protocolsAll, Map.of());
+        }
+
+        public UserConnection(boolean success,
+                              String userId,
+                              String uuid,
+                              List<String> protocols,
+                              String vless,
+                              String vmess,
+                              SocksConnection socks,
+                              boolean proxyBound,
+                              Instant createdAt,
+                              Map<String, String> protocolsAll,
+                              Map<String, Object> protocolInfo) {
+            this(success, userId, uuid, protocols, vless, vmess, socks, proxyBound, createdAt,
+                    null, "ACTIVE", protocolsAll, protocolInfo);
         }
 
         public UserConnection {
@@ -288,13 +330,57 @@ public final class RemoteModels {
             @Min(value = 1, message = "流量额度不能小于 1") Long trafficLimitBytes,
             @Min(value = 1, message = "最大来源 IP 数不能小于 1")
             @Max(value = 1000, message = "最大来源 IP 数不能超过 1000") Integer maxSourceIps
+            ,
+            Instant expiresAt
     ) {
         public CreateUserRequest(String userId,
                                  List<String> protocols,
                                  String socksUsername,
                                  String socksPassword,
                                  ProxyConfig proxy) {
-            this(userId, protocols, socksUsername, socksPassword, proxy, null, null);
+            this(userId, protocols, socksUsername, socksPassword, proxy, null, null, null);
+        }
+
+        public CreateUserRequest(String userId,
+                                 List<String> protocols,
+                                 String socksUsername,
+                                 String socksPassword,
+                                 ProxyConfig proxy,
+                                 Long trafficLimitBytes,
+                                 Integer maxSourceIps) {
+            this(userId, protocols, socksUsername, socksPassword, proxy,
+                    trafficLimitBytes, maxSourceIps, null);
+        }
+    }
+
+    public record UpdateUserExpirationRequest(Instant expiresAt) {
+    }
+
+    public record UserExpirationResponse(
+            boolean success,
+            String userId,
+            Instant expiresAt,
+            String expirationStatus
+    ) {
+    }
+
+    public record ExpiredUserSummary(
+            String userId,
+            Instant createdAt,
+            Instant expiresAt,
+            Instant expiredAt,
+            Instant archivedAt,
+            String status,
+            List<String> protocols
+    ) {
+        public ExpiredUserSummary {
+            protocols = protocols == null ? List.of() : List.copyOf(protocols);
+        }
+    }
+
+    public record ExpiredUserListResponse(List<ExpiredUserSummary> items, long total) {
+        public ExpiredUserListResponse {
+            items = items == null ? List.of() : List.copyOf(items);
         }
     }
 

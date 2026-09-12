@@ -63,6 +63,7 @@ export const api = {
   deleteNode: (nodeId) => request(`/api/control/nodes/${nodeId}`, { method: 'DELETE' }),
   users: (nodeId, params, options = {}) => request(`/api/control/nodes/${nodeId}/users?${queryString(params)}`, options),
   usersForExport: (nodeId, params, options = {}) => request(`/api/control/nodes/${nodeId}/users/export?${queryString(params)}`, options),
+  expiredUsers: (nodeId) => request(`/api/control/nodes/${nodeId}/expired-users`),
   createUser: (nodeId, payload) => request(`/api/control/nodes/${nodeId}/users`, {
     method: 'POST', headers: operationHeaders('manual-create'), body: JSON.stringify(payload),
   }),
@@ -74,6 +75,12 @@ export const api = {
   traffic: (nodeId, userId) => request(`/api/control/nodes/${nodeId}/users/${encodeURIComponent(userId)}/traffic`),
   updateUserPolicy: (nodeId, userId, payload) => request(`/api/control/nodes/${nodeId}/users/${encodeURIComponent(userId)}/policy`, {
     method: 'PATCH', body: JSON.stringify(payload),
+  }),
+  updateUserExpiration: (nodeId, userId, payload) => request(`/api/control/nodes/${nodeId}/users/${encodeURIComponent(userId)}/expiration`, {
+    method: 'PATCH', body: JSON.stringify(payload),
+  }),
+  restoreUser: (nodeId, userId, payload) => request(`/api/control/nodes/${nodeId}/users/${encodeURIComponent(userId)}/restore`, {
+    method: 'POST', body: JSON.stringify(payload),
   }),
   bindProxy: (nodeId, payload) => request(`/api/control/nodes/${nodeId}/users/bind-proxy`, {
     method: 'POST', headers: operationHeaders('manual-bind'), body: JSON.stringify(payload),

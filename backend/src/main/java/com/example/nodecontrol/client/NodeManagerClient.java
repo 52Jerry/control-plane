@@ -12,6 +12,9 @@ import com.example.nodecontrol.dto.RemoteModels.ProxyMetadataUpdateRequest;
 import com.example.nodecontrol.dto.RemoteModels.ReloadResponse;
 import com.example.nodecontrol.dto.RemoteModels.TrafficResponse;
 import com.example.nodecontrol.dto.RemoteModels.UpdateUserPolicyRequest;
+import com.example.nodecontrol.dto.RemoteModels.UpdateUserExpirationRequest;
+import com.example.nodecontrol.dto.RemoteModels.UserExpirationResponse;
+import com.example.nodecontrol.dto.RemoteModels.ExpiredUserListResponse;
 import com.example.nodecontrol.dto.RemoteModels.UserConnection;
 import com.example.nodecontrol.dto.RemoteModels.UserPage;
 import com.example.nodecontrol.dto.RemoteModels.UserPolicyResponse;
@@ -162,6 +165,36 @@ public class NodeManagerClient {
                 .retrieve()
                 .onStatus(HttpStatusCode::isError, this::handleError)
                 .body(UserPolicyResponse.class));
+    }
+
+    public ExpiredUserListResponse getExpiredUsers(ManagedNode node) {
+        return execute(() -> client(node).get()
+                .uri("/api/users/expired")
+                .retrieve()
+                .onStatus(HttpStatusCode::isError, this::handleError)
+                .body(ExpiredUserListResponse.class));
+    }
+
+    public UserExpirationResponse updateUserExpiration(ManagedNode node,
+                                                        String userId,
+                                                        UpdateUserExpirationRequest request) {
+        return execute(() -> client(node).patch()
+                .uri("/api/user/{userId}/expiration", userId)
+                .body(request)
+                .retrieve()
+                .onStatus(HttpStatusCode::isError, this::handleError)
+                .body(UserExpirationResponse.class));
+    }
+
+    public UserExpirationResponse restoreUser(ManagedNode node,
+                                              String userId,
+                                              UpdateUserExpirationRequest request) {
+        return execute(() -> client(node).post()
+                .uri("/api/user/{userId}/restore", userId)
+                .body(request)
+                .retrieve()
+                .onStatus(HttpStatusCode::isError, this::handleError)
+                .body(UserExpirationResponse.class));
     }
 
     public ProxyDetails getProxy(ManagedNode node, String userId) {

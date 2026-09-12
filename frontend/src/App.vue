@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
-  Activity, AlertTriangle, Clipboard, CloudCog, Copy, Database, Download, Eye, EyeOff, FileSpreadsheet, Gauge, Link, LogOut, Plus, Power,
+  Activity, AlertTriangle, Clipboard, CloudCog, Copy, Database, Download, Eye, EyeOff, FileSpreadsheet, Gauge, Link, LogOut, Plus, Power, Clock3,
   RefreshCw, RotateCw, Search, Server, Settings2, ShieldCheck, Trash2, UserCog, Users,
   Upload, Wrench, X,
 } from 'lucide-vue-next'
@@ -34,6 +34,8 @@ const nodes = ref([])
 const users = ref([])
 const userLoadError = ref('')
 const allocations = ref([])
+const expiredUsers = ref([])
+const expiredUsersLoadError = ref('')
 const allocationPage = reactive({ page: 1, pageSize: 20, total: 0, totalPages: 1, ip: '' })
 const auditLogs = ref([])
 const auditPage = reactive({ page: 0, pageSize: 50, total: 0, totalPages: 1 })
@@ -41,8 +43,8 @@ const controlAccounts = ref([])
 const activeView = ref('overview')
 const userPage = reactive({ page: 1, pageSize: 20, total: 0, keyword: '', ip: '', sort: 'createdDesc' })
 const selectedNodeId = ref(localStorage.getItem('selected-node-id') || '')
-const loading = reactive({ app: true, nodes: false, users: false, allocations: false, audit: false, action: false })
-const modal = reactive({ login: false, accounts: false, node: false, installation: false, user: false, provision: false, connection: false, proxy: false, proxyDetails: false, policy: false, settings: false, exportUsers: false })
+const loading = reactive({ app: true, nodes: false, users: false, allocations: false, expiredUsers: false, audit: false, action: false })
+const modal = reactive({ login: false, accounts: false, node: false, installation: false, user: false, provision: false, connection: false, proxy: false, proxyDetails: false, policy: false, expiration: false, expiredUsers: false, settings: false, exportUsers: false })
 const toast = reactive({ visible: false, type: 'success', message: '' })
 const loginForm = reactive({ username: '', password: '' })
 const accountForm = reactive({ username: '', password: '', role: 'PROVISIONER' })
@@ -84,8 +86,10 @@ const revealBatchSecrets = ref(false)
 const installCommand = ref('')
 const installExpiresAt = ref('')
 const installNow = ref(Date.now())
+const expirationNow = ref(Date.now())
 let refreshTimer
 let installTimer
+let expirationTimer
 let toastTimer
 let installRequestVersion = 0
 let nodeTokenRequestVersion = 0
@@ -109,9 +113,11 @@ const userForm = reactive({
   proxyPassword: '',
   trafficLimitGb: null,
   maxSourceIps: null,
+  expiresAt: '',
 })
 const proxyForm = reactive({ userId: '', server: '', port: 1080, username: '', password: '' })
 const policyForm = reactive({ userId: '', trafficLimitGb: null, maxSourceIps: null })
+const expirationForm = reactive({ userId: '', expiresAt: '', restore: false })
 
 function defaultTrafficLimitGb() {
   return defaultUserPolicy.value ? defaultUserPolicy.value.trafficLimitBytes / (1024 ** 3) : null
@@ -278,6 +284,8 @@ function clearBusinessData() {
   users.value = []
   userLoadError.value = ''
   allocations.value = []
+  expiredUsers.value = []
+  expiredUsersLoadError.value = ''
   auditLogs.value = []
   controlAccounts.value = []
   dashboard.value = { nodeCount: 0, onlineNodeCount: 0, degradedNodeCount: 0, userCount: 0, connections: 0, totalTraffic: 0 }
@@ -295,6 +303,8 @@ function clearBusinessData() {
   closeProxyDetailsModal()
   clearBatchDetails()
   clearNodeInstallation()
+  closeExpirationModal()
+  modal.expiredUsers = false
 }
 
 function requireLogin(message = '') {
@@ -367,6 +377,11 @@ function closeUserModal() {
   modal.user = false
   userForm.socksPassword = ''
   userForm.proxyPassword = ''
+}
+
+function closeExpirationModal() {
+  modal.expiration = false
+  Object.assign(expirationForm, { userId: '', expiresAt: '', restore: false })
 }
 
 function closeProxyModal() {
@@ -553,6 +568,25 @@ async function loadAllocations(resetPage = false) {
   } finally {
     loading.allocations = false
   }
+}
+
+async function loadExpiredUsers() {
+  if (!selectedNodeId.value) return
+  loading.expiredUsers = true
+  expiredUsersLoadError.value = ''
+  try {
+    const data = await api.expiredUsers(selectedNodeId.value)
+    expiredUsers.value = Array.isArray(data) ? data : (data.items || [])
+  } catch (error) {
+    expiredUsersLoadError.value = errorMessage(error)
+  } finally {
+    loading.expiredUsers = false
+  }
+}
+
+async function openExpiredUsers() {
+  modal.expiredUsers = true
+  await loadExpiredUsers()
 }
 
 async function loadAuditLogs() {
@@ -1172,6 +1206,7 @@ function openCreateUser() {
     userId: '', protocols: ['vless', 'vmess', 'socks'], socksUsername: '', socksPassword: '',
     useProxy: false, proxyServer: '', proxyPort: 1080, proxyUsername: '', proxyPassword: '',
     trafficLimitGb: defaultTrafficLimitGb(), maxSourceIps: defaultUserPolicy.value?.maxSourceIps ?? null,
+    expiresAt: '',
   })
   modal.user = true
 }
@@ -1201,6 +1236,7 @@ async function createUser() {
       proxy,
       trafficLimitBytes: gigabytesToBytes(userForm.trafficLimitGb),
       maxSourceIps: positiveIntegerOrNull(userForm.maxSourceIps),
+      expiresAt: userForm.expiresAt ? new Date(userForm.expiresAt).toISOString() : null,
     })
     closeUserModal()
     connectionData.value = withDirectEndpoint(result, directEndpoint)
@@ -1225,6 +1261,64 @@ function openPolicy(user) {
     maxSourceIps: user.maxSourceIps || null,
   })
   modal.policy = true
+}
+
+function toDateTimeLocal(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  const pad = (number) => String(number).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+function openExpiration(user, restore = false) {
+  Object.assign(expirationForm, {
+    userId: user.userId,
+    expiresAt: toDateTimeLocal(user.expiresAt),
+    restore,
+  })
+  modal.expiration = true
+}
+
+function expirationStatusText(status) {
+  return ({ ACTIVE: '有效', EXPIRED: '已到期', ARCHIVED: '已归档' })[status] || status || '未知'
+}
+
+function expirationClass(status) {
+  return ({ ACTIVE: 'positive', EXPIRED: 'warning', ARCHIVED: 'danger-text' })[status] || 'muted'
+}
+
+function expirationHint(user) {
+  if (user.expirationStatus !== 'EXPIRED' || !user.expiresAt) return ''
+  const remaining = new Date(user.expiresAt).getTime() + 72 * 3600 * 1000 - expirationNow.value
+  if (remaining <= 0) return '恢复窗口已结束'
+  const hours = Math.floor(remaining / 3600000)
+  return `可恢复 ${hours} 小时`
+}
+
+async function saveExpiration() {
+  if (!selectedNodeId.value || !expirationForm.userId || !expirationForm.expiresAt) return
+  const expiresAt = new Date(expirationForm.expiresAt)
+  if (Number.isNaN(expiresAt.getTime()) || expiresAt <= new Date()) {
+    notify('有效期必须晚于当前时间', 'error')
+    return
+  }
+  loading.action = true
+  try {
+    const payload = { expiresAt: expiresAt.toISOString() }
+    const restoring = expirationForm.restore
+    if (expirationForm.restore) {
+      await api.restoreUser(selectedNodeId.value, expirationForm.userId, payload)
+    } else {
+      await api.updateUserExpiration(selectedNodeId.value, expirationForm.userId, payload)
+    }
+    closeExpirationModal()
+    await Promise.all([loadUsers(false, { force: true }), loadExpiredUsers(), loadNodes()])
+    notify(restoring ? '用户已恢复并更新有效期' : '用户有效期已更新')
+  } catch (error) {
+    notify(errorMessage(error), 'error')
+  } finally {
+    loading.action = false
+  }
 }
 
 async function savePolicy() {
@@ -1887,12 +1981,14 @@ onMounted(async () => {
     if (!modal.login) Promise.all([loadNodes(), loadAllocations()]).catch(() => {})
   }, 15000)
   installTimer = setInterval(() => { installNow.value = Date.now() }, 1000)
+  expirationTimer = setInterval(() => { expirationNow.value = Date.now() }, 60000)
 })
 
 onBeforeUnmount(() => {
   setUnauthorizedHandler(null)
   clearInterval(refreshTimer)
   clearInterval(installTimer)
+  clearInterval(expirationTimer)
   clearTimeout(toastTimer)
   clearFormSecrets()
   clearBusinessData()
@@ -2148,18 +2244,19 @@ onBeforeUnmount(() => {
             <button v-if="canViewSensitive" class="button ghost icon-text" :title="revealListCredentials ? '隐藏认证信息' : '显示认证信息'" @click="revealListCredentials = !revealListCredentials"><EyeOff v-if="revealListCredentials" :size="14" /><Eye v-else :size="14" />认证</button>
             <button v-if="selectedUserCount" class="selection-count" type="button" title="清空已选用户" @click="clearUserSelection">已选 {{ selectedUserCount }} 条 <X :size="12" /></button>
             <button v-if="canViewSensitive || canProvision" class="button ghost icon-text" :disabled="loading.users || !selectedNode" @click="openUserExport"><FileSpreadsheet :size="14" />{{ selectedUserCount ? `导出所选 ${selectedUserCount} 条` : 'Excel 导入/导出' }}</button>
+            <button class="button ghost icon-text" :disabled="!selectedNode || loading.expiredUsers" @click="openExpiredUsers"><Clock3 :size="14" />过期记录</button>
             <button class="button ghost icon-text" :disabled="loading.users || !selectedNode" @click="loadUsers(false, { force: true })"><RefreshCw :size="14" />刷新</button>
           </div>
         </div>
 
         <div class="table-wrap">
           <table>
-            <thead><tr><th class="selection-column"><input type="checkbox" title="选择当前页" aria-label="选择当前页节点用户" :checked="allCurrentPageUsersSelected" :indeterminate="someCurrentPageUsersSelected && !allCurrentPageUsersSelected" :disabled="loading.users || users.length === 0" @change="toggleCurrentPageUsers($event.target.checked)" /></th><th class="sequence-column">序号</th><th>用户</th><th>协议</th><th>IP</th><th>端口</th><th>认证信息</th><th>地区</th><th>出口模式</th><th>流量</th><th>在线设备</th><th>状态</th><th>创建时间</th><th class="sticky-actions">操作</th></tr></thead>
+            <thead><tr><th class="selection-column"><input type="checkbox" title="选择当前页" aria-label="选择当前页节点用户" :checked="allCurrentPageUsersSelected" :indeterminate="someCurrentPageUsersSelected && !allCurrentPageUsersSelected" :disabled="loading.users || users.length === 0" @change="toggleCurrentPageUsers($event.target.checked)" /></th><th class="sequence-column">序号</th><th>用户</th><th>协议</th><th>IP</th><th>端口</th><th>认证信息</th><th>地区</th><th>出口模式</th><th>流量</th><th>在线设备</th><th>状态</th><th>创建时间</th><th>到期时间</th><th class="sticky-actions">操作</th></tr></thead>
             <tbody>
-              <tr v-if="loading.users && users.length === 0"><td colspan="14" class="empty-state">正在加载节点用户…</td></tr>
-              <tr v-else-if="userLoadError && users.length === 0"><td colspan="14" class="empty-state error-detail">节点用户加载失败：{{ userLoadError }}</td></tr>
-              <tr v-else-if="!selectedNode"><td colspan="14" class="empty-state">请先添加并选择一个节点</td></tr>
-              <tr v-else-if="users.length === 0"><td colspan="14" class="empty-state">当前节点暂无匹配用户</td></tr>
+              <tr v-if="loading.users && users.length === 0"><td colspan="15" class="empty-state">正在加载节点用户…</td></tr>
+              <tr v-else-if="userLoadError && users.length === 0"><td colspan="15" class="empty-state error-detail">节点用户加载失败：{{ userLoadError }}</td></tr>
+              <tr v-else-if="!selectedNode"><td colspan="15" class="empty-state">请先添加并选择一个节点</td></tr>
+              <tr v-else-if="users.length === 0"><td colspan="15" class="empty-state">当前节点暂无匹配用户</td></tr>
               <tr v-for="(user, userIndex) in users" :key="user.userId" :class="{ 'selected-user-row': selectedUserIds.includes(user.userId) }">
                 <td class="selection-cell"><input type="checkbox" :aria-label="`选择节点用户 ${user.userId}`" :checked="selectedUserIds.includes(user.userId)" @change="toggleUserSelection(user.userId, $event.target.checked)" /></td>
                 <td class="sequence-cell">{{ (userPage.page - 1) * userPage.pageSize + userIndex + 1 }}</td>
@@ -2174,7 +2271,8 @@ onBeforeUnmount(() => {
                 <td><strong>{{ user.activeSourceIps?.length || 0 }}<template v-if="user.maxSourceIps"> / {{ user.maxSourceIps }}</template></strong><small class="traffic-split">按同时来源 IP 统计</small></td>
                 <td><span class="policy-status" :class="user.status">{{ userPolicyStatus(user.status) }}</span></td>
                 <td>{{ formatDate(user.createdAt) }}</td>
-                <td class="sticky-actions"><div class="row-actions"><button v-if="canViewSensitive" @click="showConnections(user)">连接</button><button v-if="canManageUsers" @click="openProxy(user)">代理</button><button v-if="canManageUsers" class="icon-action" title="编辑流量和设备限制" @click="openPolicy(user)"><Settings2 :size="14" />限制</button><button v-if="canDeleteUsers" class="icon-action danger-text delete-user-action" :disabled="Boolean(deletingUserId)" :title="deletingUserId === user.userId ? '正在删除节点用户' : '删除节点用户'" @click="deleteUser(user)"><RefreshCw v-if="deletingUserId === user.userId" class="spin" :size="14" /><Trash2 v-else :size="14" />{{ deletingUserId === user.userId ? '删除中' : '删除' }}</button></div></td>
+                <td><span class="expiration-cell" :class="expirationClass(user.expirationStatus)">{{ formatDate(user.expiresAt) }}</span><small v-if="expirationHint(user)" class="table-subtext">{{ expirationHint(user) }}</small></td>
+                <td class="sticky-actions"><div class="row-actions"><button v-if="canViewSensitive && user.expirationStatus !== 'EXPIRED'" @click="showConnections(user)">连接</button><button v-if="canManageUsers" @click="openProxy(user)">代理</button><button v-if="canManageUsers" class="icon-action" title="编辑流量和设备限制" @click="openPolicy(user)"><Settings2 :size="14" />限制</button><button v-if="canManageUsers" class="icon-action" title="设置用户有效期" @click="openExpiration(user)"><Clock3 :size="14" />有效期</button><button v-if="canManageUsers && user.expirationStatus === 'EXPIRED' && expirationHint(user) !== '恢复窗口已结束'" class="icon-action" @click="openExpiration(user, true)"><RotateCw :size="14" />恢复</button><button v-if="canDeleteUsers" class="icon-action danger-text delete-user-action" :disabled="Boolean(deletingUserId)" :title="deletingUserId === user.userId ? '正在删除节点用户' : '删除节点用户'" @click="deleteUser(user)"><RefreshCw v-if="deletingUserId === user.userId" class="spin" :size="14" /><Trash2 v-else :size="14" />{{ deletingUserId === user.userId ? '删除中' : '删除' }}</button></div></td>
               </tr>
             </tbody>
           </table>
@@ -2319,7 +2417,7 @@ onBeforeUnmount(() => {
     <div v-if="modal.user" class="modal-backdrop" @mousedown.self="closeUserModal">
       <form class="modal-card wide-card" @submit.prevent="createUser">
         <div class="modal-heading"><div><p class="eyebrow">手动创建用户</p><h2>手动创建节点用户</h2></div><button type="button" class="close-button" title="关闭" @click="closeUserModal"><X :size="17" /></button></div>
-        <div class="form-grid"><label>用户 ID<input v-model.trim="userForm.userId" required pattern="[A-Za-z0-9._-]+" /></label><label>SOCKS 用户名（可选）<input v-model.trim="userForm.socksUsername" autocomplete="off" /></label><label>SOCKS 密码（可选）<input v-model="userForm.socksPassword" type="password" autocomplete="new-password" /></label><label>流量额度（GB）<input v-model.number="userForm.trafficLimitGb" type="number" min="0" step="0.1" placeholder="数据库默认值" /></label><label>最大同时来源 IP 数<input v-model.number="userForm.maxSourceIps" type="number" min="0" max="1000" step="1" placeholder="数据库默认值" /></label></div>
+        <div class="form-grid"><label>用户 ID<input v-model.trim="userForm.userId" required pattern="[A-Za-z0-9._-]+" /></label><label>SOCKS 用户名（可选）<input v-model.trim="userForm.socksUsername" autocomplete="off" /></label><label>SOCKS 密码（可选）<input v-model="userForm.socksPassword" type="password" autocomplete="new-password" /></label><label>流量额度（GB）<input v-model.number="userForm.trafficLimitGb" type="number" min="0" step="0.1" placeholder="数据库默认值" /></label><label>最大同时来源 IP 数<input v-model.number="userForm.maxSourceIps" type="number" min="0" max="1000" step="1" placeholder="数据库默认值" /></label><label>到期时间（可选）<input v-model="userForm.expiresAt" type="datetime-local" /><small class="form-note">留空则按创建时间后 30 天到期</small></label></div>
         <fieldset><legend>启用协议</legend><div class="checkbox-row"><label v-for="protocol in ['vless','vmess','socks']" :key="protocol"><input v-model="userForm.protocols" type="checkbox" :value="protocol" />{{ protocol.toUpperCase() }}</label></div></fieldset>
         <label class="toggle-row"><input v-model="userForm.useProxy" type="checkbox" /><span>创建时绑定住宅 SOCKS5 出口</span></label>
         <div v-if="userForm.useProxy" class="form-grid proxy-grid"><label>代理服务器<input v-model.trim="userForm.proxyServer" required /></label><label>端口<input v-model.number="userForm.proxyPort" type="number" min="1" max="65535" required /></label><label>用户名<input v-model.trim="userForm.proxyUsername" required autocomplete="off" /></label><label>密码<input v-model="userForm.proxyPassword" required type="password" autocomplete="new-password" /></label></div>
@@ -2337,6 +2435,27 @@ onBeforeUnmount(() => {
         <p class="form-note">设备数按代理连接的同时来源 IP 统计；超出额度或来源 IP 上限时，节点会主动关闭对应连接。</p>
         <div class="modal-actions"><button type="button" class="button ghost" @click="closePolicyModal">取消</button><button class="button primary" :disabled="loading.action">保存限制</button></div>
       </form>
+    </div>
+
+    <div v-if="modal.expiration" class="modal-backdrop" @mousedown.self="closeExpirationModal">
+      <form class="modal-card" @submit.prevent="saveExpiration">
+        <div class="modal-heading"><div><p class="eyebrow">{{ expirationForm.restore ? '恢复节点用户' : '用户有效期' }}</p><h2>{{ expirationForm.userId }}</h2></div><button type="button" class="close-button" title="关闭" @click="closeExpirationModal"><X :size="17" /></button></div>
+        <label>到期时间<input v-model="expirationForm.expiresAt" type="datetime-local" required /></label>
+        <p class="form-note">到期后用户会立即无法连接。到期 72 小时内可手工恢复；超过 72 小时后会从 sing-box 移除并进入过期记录。</p>
+        <div class="modal-actions"><button type="button" class="button ghost" @click="closeExpirationModal">取消</button><button class="button primary" :disabled="loading.action">{{ expirationForm.restore ? '恢复用户' : '保存有效期' }}</button></div>
+      </form>
+    </div>
+
+    <div v-if="modal.expiredUsers" class="modal-backdrop" @mousedown.self="modal.expiredUsers = false">
+      <div class="modal-card wide-card">
+        <div class="modal-heading"><div><p class="eyebrow">过期用户归档</p><h2>{{ selectedNode?.name || '当前节点' }} · 过期记录</h2></div><button type="button" class="close-button" title="关闭" @click="modal.expiredUsers = false"><X :size="17" /></button></div>
+        <div class="table-wrap expired-users-table">
+          <table><thead><tr><th>用户</th><th>协议</th><th>创建时间</th><th>到期时间</th><th>归档时间</th><th>状态</th></tr></thead>
+            <tbody><tr v-if="loading.expiredUsers"><td colspan="6" class="empty-state">正在读取过期记录…</td></tr><tr v-else-if="expiredUsersLoadError"><td colspan="6" class="empty-state error-detail">{{ expiredUsersLoadError }}</td></tr><tr v-else-if="expiredUsers.length === 0"><td colspan="6" class="empty-state">暂无过期记录</td></tr><tr v-for="item in expiredUsers" :key="`${item.userId}-${item.archivedAt || item.expiresAt}`"><td><strong>{{ item.userId }}</strong></td><td>{{ item.protocols?.join(' / ') || '-' }}</td><td>{{ formatDate(item.createdAt) }}</td><td>{{ formatDate(item.expiresAt) }}</td><td>{{ formatDate(item.archivedAt) }}</td><td><span class="policy-status" :class="expirationClass(item.status)">{{ expirationStatusText(item.status) }}</span></td></tr></tbody>
+          </table>
+        </div>
+        <div class="modal-actions"><button type="button" class="button ghost" @click="modal.expiredUsers = false">关闭</button></div>
+      </div>
     </div>
 
     <div v-if="modal.exportUsers" class="modal-backdrop" @mousedown.self="closeUserExport">
