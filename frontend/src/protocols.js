@@ -2,6 +2,7 @@
 // Complete links are derived in memory and are never persisted in browser storage.
 
 const SOCKS_ACCELERATION_PORT = 5001
+const DEFAULT_WIREGUARD_ENDPOINT = import.meta.env?.VITE_WIREGUARD_ENDPOINT || 'momo.tkmo.xin:51820'
 
 function value(data, key, fallback = '') {
   const result = data?.[key]
@@ -56,6 +57,60 @@ function publicSocksUsername(rawUsername) {
 
 function base64Json(valueToEncode) {
   return utf8Base64(JSON.stringify(valueToEncode))
+}
+
+function wireguardSource(connection) {
+  const source = connection?.wireguard || connection?.protocolInfo?.wireguard
+  return source && typeof source === 'object' ? source : null
+}
+
+function wireguardConfig(connection) {
+  const source = wireguardSource(connection)
+  if (!source) return null
+  const privateKey = value(source, 'privateKey')
+  const serverPublicKey = value(source, 'serverPublicKey') || value(source, 'publicKey')
+  const address = value(source, 'address') || value(source, 'clientAddress')
+  if (!privateKey || !serverPublicKey || !address) return null
+  const normalizedAddress = String(address).includes(':')
+    ? `${String(address).split('/')[0]}/128`
+    : `${String(address).split('/')[0]}/32`
+  const endpoint = value(source, 'endpoint') || DEFAULT_WIREGUARD_ENDPOINT
+  const keepalive = Number(value(source, 'keepalive', 25))
+  return {
+    privateKey: String(privateKey),
+    address: normalizedAddress,
+    dns: String(value(source, 'dns', '1.1.1.1')),
+    mtu: port(source, 'mtu', 1380),
+    serverPublicKey: String(serverPublicKey),
+    endpoint: String(endpoint),
+    allowedIps: String(value(source, 'allowedIps', '0.0.0.0/0')),
+    keepalive: Number.isInteger(keepalive) && keepalive >= 0 ? keepalive : 25,
+    remark: String(value(source, 'remark') || value(source, 'name') || 'WireGuard'),
+  }
+}
+
+export function buildWireguardConfig(connection) {
+  const config = wireguardConfig(connection)
+  if (!config) return ''
+  return `[Interface]\nPrivateKey = ${config.privateKey}\nAddress = ${config.address}\nDNS = ${config.dns}\nMTU = ${config.mtu}\n\n[Peer]\nPublicKey = ${config.serverPublicKey}\nEndpoint = ${config.endpoint}\nAllowedIPs = ${config.allowedIps}\nPersistentKeepalive = ${config.keepalive}\n`
+}
+
+export function buildWireguard(connection) {
+  const config = wireguardConfig(connection)
+  if (!config) return ''
+  const params = new URLSearchParams()
+  params.set('publickey', config.serverPublicKey)
+  params.set('address', config.address)
+  params.set('mtu', String(config.mtu))
+  if (wireguardSource(connection)?.allowedIps) params.set('allowedips', config.allowedIps)
+  if (wireguardSource(connection)?.dns) params.set('dns', config.dns)
+  if (wireguardSource(connection)?.keepalive !== undefined) params.set('keepalive', String(config.keepalive))
+  return `wireguard://${encode(config.privateKey)}@${config.endpoint}?${params.toString()}#${encode(config.remark)}`
+}
+
+export function buildWireguardBase64(connection) {
+  const link = buildWireguard(connection)
+  return link ? utf8Base64(link) : ''
 }
 
 function countryCode(data) {
@@ -193,6 +248,7 @@ const connectionLabels = {
   fingerprintAcceleration: '指纹浏览器加速',
   ipDirect: 'IP 直连',
   ipDirectSocks: 'IP 直连 SOCKS',
+  wireguard: 'WireGuard',
 }
 
 export const connectionExportScenarios = [
@@ -202,6 +258,7 @@ export const connectionExportScenarios = [
   { key: 'socksAcceleration', label: 'SOCKS' },
   { key: 'vmess', label: 'VMess' },
   { key: 'fingerprintAcceleration', label: '指纹加速' },
+  { key: 'wireguard', label: 'WireGuard' },
 ]
 
 function connectionSocks(connection) {
@@ -339,6 +396,8 @@ export function buildConnectionLinks(connection) {
       if (link) links.push({ key, protocol: connectionLabels[key], value: link })
     })
   }
+  const wireguard = buildWireguard(connection)
+  if (wireguard) links.push({ key: 'wireguard', protocol: connectionLabels.wireguard, value: wireguard })
   return links
 }
 

@@ -1634,7 +1634,7 @@ async function exportNodeUsers() {
     let failedCount = 0
     const directExportScenarios = new Set(['ipDirect', 'ipDirectSocks'])
     const accelerationExportScenarios = new Set([
-      'vless', 'socksAcceleration', 'vmess', 'fingerprintAcceleration',
+      'vless', 'socksAcceleration', 'vmess', 'fingerprintAcceleration', 'wireguard',
     ])
     const includeAccelerationDomain = accelerationExportScenarios.has(scenario.key)
     const directData = new Map()

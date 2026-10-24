@@ -136,6 +136,8 @@ h2 { margin-bottom: 0; font-size: 18px; letter-spacing: 0; }
 .batch-links span { color: #64dcb6; font-size: 9px; font-weight: 900; }
 .batch-links code { min-width: 0; overflow: hidden; color: #d6e0ed; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .batch-links button { width: 27px; height: 27px; display: grid; place-items: center; border: 0; color: #7db7f6; background: transparent; border-radius: 6px; }
+.wireguard-export-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+.wireguard-export-actions .button { min-height: 30px; padding: 5px 9px; font-size: 10px; }
 .table-wrap { overflow-x: auto; }
 table { width: 100%; min-width: 900px; border-collapse: collapse; }
 th, td { padding: 14px 17px; text-align: left; border-bottom: 1px solid #edf0f5; font-size: 12px; }

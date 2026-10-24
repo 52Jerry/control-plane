@@ -7,9 +7,35 @@ import {
   buildIpDirect,
   buildIpDirectSocks,
   buildSocks5Original,
+  buildWireguard,
+  buildWireguardBase64,
+  buildWireguardConfig,
   connectionExportScenarios,
   socksCredentialCompatibility,
 } from '../src/protocols.js'
+
+const wireguardConnection = {
+  wireguard: {
+    privateKey: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+    address: '10.77.12.7/32',
+    serverPublicKey: 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=',
+    endpoint: '125.94.47.99:50009',
+    allowedIps: '0.0.0.0/0',
+    dns: '1.1.1.1',
+    keepalive: 25,
+    mtu: 1280,
+    remark: '51SDWAN-深港云网络-ALL-100M',
+  },
+}
+
+test('WireGuard links match the portable URI and Base64 format', () => {
+  const link = buildWireguard(wireguardConnection)
+  assert.match(link, /^wireguard:\/\/A+%3D@125\.94\.47\.99:50009\?publickey=/)
+  assert.equal(Buffer.from(buildWireguardBase64(wireguardConnection), 'base64').toString(), link)
+  assert.match(buildWireguardConfig(wireguardConnection), /\[Interface\]/)
+  assert.match(buildWireguardConfig(wireguardConnection), /Endpoint = 125\.94\.47\.99:50009/)
+  assert.match(buildWireguard({ ...wireguardConnection, wireguard: { ...wireguardConnection.wireguard, address: '10.77.12.7/16' } }), /address=10\.77\.12\.7%2F32/)
+})
 
 function structured(overrides = {}) {
   return {
@@ -341,6 +367,7 @@ test('export scenarios expose all selectable connection formats', () => {
     'socksAcceleration',
     'vmess',
     'fingerprintAcceleration',
+    'wireguard',
   ])
 })
 

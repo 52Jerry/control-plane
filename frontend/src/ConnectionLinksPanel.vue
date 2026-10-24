@@ -2,7 +2,12 @@
 import { computed, ref, watch } from 'vue'
 import { Copy, QrCode } from 'lucide-vue-next'
 import QRCode from 'qrcode'
-import { buildConnectionLinks, socksCredentialCompatibility } from './protocols'
+import {
+  buildConnectionLinks,
+  buildWireguardBase64,
+  buildWireguardConfig,
+  socksCredentialCompatibility,
+} from './protocols'
 
 const props = defineProps({
   connection: { type: Object, default: null },
@@ -20,6 +25,7 @@ const accelerationOptions = [
   { key: 'socksAcceleration', label: 'SOCKS' },
   { key: 'vmess', label: 'VMess' },
   { key: 'fingerprintAcceleration', label: '指纹加速' },
+  { key: 'wireguard', label: 'WireGuard' },
 ]
 
 const selectedOriginalKey = ref('ipDirect')
@@ -40,6 +46,12 @@ const selectedOriginal = computed(() => linksByKey.value.get(selectedOriginalKey
 const selectedAcceleration = computed(() => linksByKey.value.get(selectedAccelerationKey.value)
   || linksByKey.value.get(availableAccelerationOptions.value[0]?.key)
   || null)
+const wireguardBase64 = computed(() => selectedAcceleration.value?.key === 'wireguard'
+  ? buildWireguardBase64(props.connection)
+  : '')
+const wireguardConfig = computed(() => selectedAcceleration.value?.key === 'wireguard'
+  ? buildWireguardConfig(props.connection)
+  : '')
 const credentialCompatibility = computed(() => socksCredentialCompatibility(props.connection))
 
 watch(originalLinks, (available) => {
@@ -142,6 +154,14 @@ function maskedLink() {
           </div>
           <button type="button" :title="`复制 ${selectedAcceleration.protocol}`" @click="emit('copy', selectedAcceleration.value)">
             <Copy :size="15" />
+          </button>
+        </div>
+        <div v-if="revealSecrets && selectedAcceleration.key === 'wireguard'" class="wireguard-export-actions">
+          <button type="button" class="button ghost icon-text" @click="emit('copy', wireguardBase64)">
+            <Copy :size="14" />复制 Base64
+          </button>
+          <button type="button" class="button ghost icon-text" @click="emit('copy', wireguardConfig)">
+            <Copy :size="14" />复制配置
           </button>
         </div>
       </div>
